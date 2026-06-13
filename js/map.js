@@ -16,7 +16,7 @@ const MapView = (function () {
   // 常量
   // ============================================================
   const CHART_DOM = 'map-chart';
-  const GEO_API_ROOT = 'https://geo.datav.aliyun.com/areas_v3/bound';
+  const GEO_API_ROOT = 'geo';
   const ADCODE_NATION = 100000;
 
   // 已收集数量色阶 (绿色系)
