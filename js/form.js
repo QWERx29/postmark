@@ -87,7 +87,16 @@ const EntryForm = (function () {
 
   function setDistrictValue(val) {
     const el = dom.districtContainer.querySelector('#f-district, input');
-    if (el) el.value = val || '';
+    if (!el) return;
+    // 历史记录中的区县名可能已不在参考表中 (如后来撤销或新设的行政区)，
+    // 临时补一个选项，避免编辑保存时被静默清空
+    if (el.tagName === 'SELECT' && val && !Array.from(el.options).some(o => o.value === val)) {
+      const opt = document.createElement('option');
+      opt.value = val;
+      opt.textContent = val;
+      el.appendChild(opt);
+    }
+    el.value = val || '';
   }
 
   function resetDistrictToSelect() {
@@ -307,6 +316,112 @@ const EntryForm = (function () {
     if (pc.length === 6) {
       dom.instCode.value = RecordStore.generateInstCode(pc);
     }
+  }
+
+  // ============================================================
+  // PO 数据库自动填充 (双触发器: 邮编 + 网点名称)
+  // ============================================================
+  let _poDebounceTimer = null;
+  let _poSuggestionsEl = null;
+
+  function poEnsureSuggestionsEl() {
+    if (!_poSuggestionsEl) {
+      _poSuggestionsEl = document.createElement('div');
+      _poSuggestionsEl.id = 'f-po-suggestions';
+      _poSuggestionsEl.className = 'po-suggestions';
+      dom.postOffice.parentNode.style.position = 'relative';
+      dom.postOffice.parentNode.appendChild(_poSuggestionsEl);
+    }
+    return _poSuggestionsEl;
+  }
+
+  function hidePOSuggestions() {
+    const el = _poSuggestionsEl;
+    if (el) { el.style.display = 'none'; el.innerHTML = ''; }
+  }
+
+  function showPOSuggestions(matches) {
+    const container = poEnsureSuggestionsEl();
+    if (matches.length === 0) { hidePOSuggestions(); return; }
+
+    container.innerHTML = '<div class="po-suggestions-header">匹配的网点（点击选择）：</div>';
+    matches.slice(0, 8).forEach((m, i) => {
+      const item = document.createElement('div');
+      item.className = 'po-suggestion-item';
+      item.innerHTML = `<span class="po-si-name">${escHtml(m.name)}</span>` +
+        `<span class="po-si-code">${m.postalCode || ''}</span>` +
+        `<span class="po-si-loc">${m.province}/${m.city}/${m.district}</span>`;
+      item.addEventListener('mousedown', (e) => {
+        e.preventDefault(); // 阻止 blur 先触发
+        applyPOFill(m, true);
+        hidePOSuggestions();
+      });
+      container.appendChild(item);
+    });
+    container.style.display = 'block';
+  }
+
+  /** 构建当前已选行政区划过滤条件 */
+  function poGetFilter() {
+    const filter = {};
+    if (dom.province.value) filter.province = dom.province.value;
+    if (dom.city.value)     filter.city     = dom.city.value;
+    return filter;
+  }
+
+  function applyPOFill(record, forceName) {
+    // 省 — 未选择时自动补齐
+    if (record.province && !dom.province.value) {
+      dom.province.value = record.province;
+      updateCities();
+    }
+    // 市 — 未选择时自动补齐
+    if (record.city && !dom.city.value) {
+      dom.city.value = record.city;
+      updateDistricts();
+    }
+    // 区 — 未选择时自动补齐
+    if (record.district && !getDistrictValue()) {
+      setTimeout(() => setDistrictValue(record.district), 50);
+    }
+    // 邮局名称 — 点击建议强制填入，邮编触发仅空时填入
+    if (record.name && (forceName || !dom.postOffice.value.trim())) {
+      dom.postOffice.value = record.name;
+    }
+    // 邮编 — 仅空时填充
+    if (record.postalCode && !dom.postalCode.value.trim()) {
+      dom.postalCode.value = record.postalCode;
+      autoGenerateInstCode();
+    }
+    updatePostalCodeHint();
+  }
+
+  /** 触发器 A: 邮编精确匹配（限定已选行政区） */
+  function poAutoFillByCode(code) {
+    if (typeof PODatabase === 'undefined') return;
+    const filter = poGetFilter();
+    const matches = PODatabase.searchByPostalCode(code, filter);
+    if (matches.length === 0) return;
+    applyPOFill(matches[0], false);
+    if (matches.length > 1) {
+      showPOSuggestions(matches);
+    }
+  }
+
+  /** 触发器 B: 网点名称模糊搜索（限定已选行政区） */
+  function poSearchByName(query) {
+    if (typeof PODatabase === 'undefined') { hidePOSuggestions(); return; }
+    if (!query || query.length < 2) { hidePOSuggestions(); return; }
+    const filter = poGetFilter();
+    const matches = PODatabase.searchByName(query, 8, filter);
+    if (matches.length === 0) { hidePOSuggestions(); return; }
+    showPOSuggestions(matches);
+  }
+
+  function escHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
   }
 
   // ============================================================
@@ -563,8 +678,35 @@ const EntryForm = (function () {
     // 市 → 县 联动
     dom.city.addEventListener('change', updateDistricts);
 
-    // 邮政编码 → 机构号
-    dom.postalCode.addEventListener('input', autoGenerateInstCode);
+    // 邮政编码 → 机构号 + PO 自动填充
+    dom.postalCode.addEventListener('input', function () {
+      autoGenerateInstCode();
+      const code = this.value.trim();
+      if (code.length === 6 && /^\d{6}$/.test(code)) {
+        poAutoFillByCode(code);
+      } else {
+        hidePOSuggestions();
+      }
+    });
+
+    // 网点名称 → PO 模糊搜索
+    dom.postOffice.addEventListener('input', function () {
+      clearTimeout(_poDebounceTimer);
+      const query = this.value.trim();
+      if (query.length >= 2) {
+        _poDebounceTimer = setTimeout(() => poSearchByName(query), 300);
+      } else {
+        hidePOSuggestions();
+      }
+    });
+    // 网点名称失焦时隐藏建议 (延迟以允许点击)
+    dom.postOffice.addEventListener('blur', () => {
+      setTimeout(hidePOSuggestions, 200);
+    });
+    dom.postOffice.addEventListener('focus', function () {
+      const query = this.value.trim();
+      if (query.length >= 2) poSearchByName(query);
+    });
 
     // 日历弹窗：点击输入框切换
     dom.dateInput.addEventListener('click', toggleCalendar);

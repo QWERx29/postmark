@@ -4,12 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>新一代日戳管理系统</title>
-<!-- ECharts -->
-<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
-<!-- SheetJS for Excel import -->
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-	<!-- JsBarcode for barcode generation -->
-	<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+<!-- ECharts (本地) -->
+<script src="node_modules/echarts/dist/echarts.min.js"></script>
+<!-- SheetJS for Excel import (本地) -->
+<script src="node_modules/xlsx/dist/xlsx.full.min.js"></script>
+<!-- JsBarcode for barcode generation (本地) -->
+<script src="node_modules/jsbarcode/dist/JsBarcode.all.min.js"></script>
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -25,6 +25,9 @@
     <button id="btn-add-record" class="btn-primary">+ 录入日戳</button>
     <button id="btn-show-records" class="btn-secondary">全部记录</button>
     <button id="btn-show-tools" class="btn-secondary">工具箱</button>
+    <button id="btn-show-po-search" class="btn-secondary">网点检索</button>
+    <button id="btn-show-crawler" class="btn-secondary">数据抓取</button>
+    <button id="btn-refresh" class="btn-secondary" title="刷新数据">↻ 刷新</button>
     <span id="update-time">数据更新: 2026-05-19</span>
   </div>
 </div>
@@ -473,78 +476,111 @@
 	        </div>
 	      </div>
 	    </div>
-<!-- 工具4: Base64 编解码 -->
-    <div class="tool-card">
-      <div class="tool-card-header">
-        <span class="tool-icon">[编]</span>
-        <h3>Base64 编解码</h3>
-      </div>
-      <div class="tool-card-body">
-        <p class="tool-desc">Base64 编码 / 解码（UTF-8）</p>
-        <div class="tool-form-row">
-          <select id="tool-b64-mode" class="form-select" style="width:120px;">
-            <option value="encode">编码</option>
-            <option value="decode">解码</option>
-          </select>
-          <button id="tool-b64-exec" class="btn-primary" style="background:#00991A;color:#fff;border:none;padding:7px 20px;border-radius:4px;cursor:pointer;font-weight:600;">执行</button>
-        </div>
-        <div class="tool-b64-cols">
-          <div class="tool-b64-col">
-            <label style="font-size:12px;color:#888;">输入</label>
-            <textarea id="tool-b64-input" class="form-textarea" rows="4" placeholder="输入内容..."></textarea>
-          </div>
-          <div class="tool-b64-col">
-            <label style="font-size:12px;color:#888;">输出</label>
-            <textarea id="tool-b64-output" class="form-textarea" rows="4" placeholder="输出内容..." readonly></textarea>
-          </div>
-        </div>
-      </div>
-    </div>
+    
 
-    <!-- 工具5: JSON 格式化 -->
+    <!-- 工具4: 随机网点 -->
     <div class="tool-card">
       <div class="tool-card-header">
-        <span class="tool-icon">[JS]</span>
-        <h3>JSON 格式化</h3>
+        <span class="tool-icon">[随]</span>
+        <h3>随机网点</h3>
       </div>
       <div class="tool-card-body">
-        <p class="tool-desc">格式化 / 压缩 JSON 字符串</p>
-        <div class="tool-form-row">
-          <select id="tool-json-mode" class="form-select" style="width:120px;">
-            <option value="format">格式化</option>
-            <option value="compress">压缩</option>
-          </select>
-          <button id="tool-json-exec" class="btn-primary" style="background:#00991A;color:#fff;border:none;padding:7px 20px;border-radius:4px;cursor:pointer;font-weight:600;">执行</button>
-        </div>
-        <textarea id="tool-json-input" class="form-textarea" rows="4" placeholder="输入 JSON 字符串..."></textarea>
-        <textarea id="tool-json-output" class="form-textarea" rows="4" placeholder="输出结果..." readonly></textarea>
-      </div>
-    </div>
+        <p class="tool-desc">从 base 网点参考库中按来源与行政区划筛选，随机抽取一个网点。参考库由 base 目录在应用启动时自动导入。</p>
 
-    <!-- 工具6: 随机地名生成器 -->
-    <div class="tool-card">
-      <div class="tool-card-header">
-        <span class="tool-icon">[地]</span>
-        <h3>随机地名生成器</h3>
-      </div>
-      <div class="tool-card-body">
-        <p class="tool-desc">先生成 "省/市/县" 地名，再输入最大值生成随机数</p>
+        <div class="tool-section-title">筛选条件</div>
         <div class="tool-form-row">
-          <button id="tool-place-gen" class="btn-primary" style="background:#00991A;color:#fff;border:none;padding:7px 24px;border-radius:4px;cursor:pointer;font-weight:600;">生成地名</button>
-          <button class="btn-small tool-copy" data-target="tool-place-code" style="margin-left:4px;">复制</button>
+          <select id="tool-rnd-source" class="form-select" style="width:150px;">
+            <option value="">全部来源</option>
+            <option value="post">POST（邮政官网）</option>
+            <option value="spb">SPB（邮管局）</option>
+          </select>
+          <select id="tool-rnd-province" class="form-select" style="flex:1;">
+            <option value="">全部省份</option>
+          </select>
+          <select id="tool-rnd-city" class="form-select" style="flex:1;" disabled>
+            <option value="">全部城市</option>
+          </select>
+          <select id="tool-rnd-district" class="form-select" style="flex:1;" disabled>
+            <option value="">全部区县</option>
+          </select>
         </div>
-        <div class="tool-result" id="tool-place-result" style="display:flex;border-color:#b7eb8f;background:#f6ffed;">
-          <code id="tool-place-code" style="font-size:16px;">点击「生成地名」</code>
+
+        <div class="tool-form-row">
+          <button id="tool-rnd-gen" class="btn-primary" style="background:#00991A;color:#fff;border:none;padding:7px 24px;border-radius:4px;cursor:pointer;font-weight:600;">生成随机网点</button>
+          <button class="btn-small tool-copy" data-target="tool-rnd-name" style="margin-left:4px;">复制名称</button>
+          <span id="tool-rnd-count" class="tool-import-status" style="color:#888;"></span>
         </div>
-        <div class="tool-form-row" style="margin-top:12px;">
-          <span style="font-size:13px;color:#555;">最大值</span>
-          <input type="number" id="tool-place-max" class="form-input" value="99" min="0" max="100" style="width:100px;">
-          <button id="tool-place-rand" class="btn-secondary">生成随机数</button>
+
+        <div class="tool-result" id="tool-rnd-result" style="display:none;flex-direction:column;align-items:flex-start;gap:4px;border-color:#b7eb8f;background:#f6ffed;">
+          <code id="tool-rnd-name" style="font-size:16px;letter-spacing:normal;"></code>
+          <span id="tool-rnd-loc" style="font-size:13px;color:#555;"></span>
+          <span style="font-size:12px;color:#888;">
+            邮编 <span id="tool-rnd-postal"></span>
+            &nbsp;来源 <span id="tool-rnd-src" class="tpo-src"></span>
+          </span>
         </div>
       </div>
     </div>
   </div>
 </div>
+
+<!-- ===== 网点检索页面 ===== -->
+<div id="po-search-page" style="display:none;">
+  <div id="po-search-header">
+    <h2>[ 网点检索 ]</h2>
+    <button id="btn-po-search-back" class="btn-secondary">← 返回</button>
+  </div>
+  <div id="po-search-container">
+    <div class="tool-card">
+      <div class="tool-card-header">
+        <span class="tool-icon">[搜]</span>
+        <h3>网点检索</h3>
+      </div>
+      <div class="tool-card-body">
+        <p class="tool-desc">在邮政网点参考库中按行政区划、来源与关键字筛选检索网点。参考库由 base 目录在应用启动时自动导入。</p>
+
+        <div class="tool-section-title">筛选条件</div>
+        <div class="tool-form-row">
+          <select id="tool-po-search-province" class="form-select" style="flex:1;">
+            <option value="">全部省份</option>
+          </select>
+          <select id="tool-po-search-city" class="form-select" style="flex:1;" disabled>
+            <option value="">全部城市</option>
+          </select>
+          <select id="tool-po-search-district" class="form-select" style="flex:1;" disabled>
+            <option value="">全部区县</option>
+          </select>
+        </div>
+        <div class="tool-form-row">
+          <input type="text" id="tool-po-search-input" class="form-input" placeholder="输入网点名称关键字或邮编..." style="flex:1;">
+          <select id="tool-po-search-source" class="form-select" style="width:150px;">
+            <option value="">全部来源</option>
+            <option value="post">POST（邮政官网）</option>
+            <option value="spb">SPB（邮管局）</option>
+          </select>
+          <button id="tool-po-search-clear" class="btn-secondary">重置</button>
+        </div>
+
+        <div id="tool-po-search-meta" class="tool-import-status" style="color:#888;margin:2px 0 6px;"></div>
+        <div class="tool-po-table-wrap" style="max-height:520px;">
+          <table class="tool-po-table">
+            <thead>
+              <tr>
+                <th>网点名称</th>
+                <th>省 / 市 / 区</th>
+                <th>邮编</th>
+                <th>来源</th>
+              </tr>
+            </thead>
+            <tbody id="tool-po-search-body"></tbody>
+          </table>
+        </div>
+        <div id="tool-po-search-empty" style="display:none;color:#999;text-align:center;padding:16px;font-size:13px;"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="loading-overlay" class="active">
   <div class="loading-content">
     <div class="spinner"></div>
@@ -552,8 +588,149 @@
   </div>
 </div>
 
+<!-- ===== 数据抓取页面 ===== -->
+<div id="crawler-page" style="display:none;">
+  <div id="crawler-header">
+    <h2>[ 数据抓取 ]</h2>
+    <button id="btn-crawler-back" class="btn-secondary">← 返回</button>
+  </div>
+  <div id="crawler-container">
+
+    <!-- 面板1: 爬取数据 -->
+    <div class="tool-card">
+      <div class="tool-card-header">
+        <span class="tool-icon">[抓]</span>
+        <h3>爬取数据</h3>
+      </div>
+      <div class="tool-card-body">
+        <p class="tool-desc">
+          抓取邮政官网营业信息和邮管局公示数据，保存为 GBK 编码 CSV 到 output 目录。
+        </p>
+
+        <div class="tool-section-title">数据来源</div>
+        <div class="tool-form-row">
+          <label class="crawler-check"><input type="checkbox" id="crawl-src-post" checked> 邮政官网（POST）</label>
+          <label class="crawler-check"><input type="checkbox" id="crawl-src-spb" checked> 邮管局（SPB）</label>
+        </div>
+
+        <div class="tool-section-title">
+          省份
+          <button class="btn-small" id="crawl-prov-all" style="margin-left:8px;">全选</button>
+          <button class="btn-small" id="crawl-prov-none" style="margin-left:4px;">全不选</button>
+          <span id="crawl-prov-count" class="tool-import-status" style="color:#888;margin-left:8px;"></span>
+        </div>
+        <div id="crawl-province-list" class="crawler-province-list"></div>
+
+        <div class="tool-section-title">抓取节奏</div>
+        <div class="tool-form-row">
+          <label class="crawler-field-label">源间间隔</label>
+          <input type="number" id="crawl-delay" class="form-input" value="1" min="0" max="30" step="0.5" style="width:80px;">
+          <span class="crawler-unit">秒</span>
+          <label class="crawler-field-label" style="margin-left:16px;">省间间隔</label>
+          <input type="number" id="crawl-inter-delay" class="form-input" value="1" min="0" max="60" step="0.5" style="width:80px;">
+          <span class="crawler-unit">秒</span>
+        </div>
+        <p class="tool-desc" style="margin-top:4px;">
+          注意：抓取邮管局公示信息耗时较长，请耐心等待。抓取过程中请勿关闭或刷新页面，否则可能导致数据不完整。
+        </p>
+
+        <div class="tool-form-row" style="margin-top:10px;">
+          <button id="btn-crawl-start" class="btn-primary tool-btn-primary">开始抓取</button>
+          <button id="btn-crawl-cancel" class="btn-secondary" disabled>取消</button>
+          <span id="crawl-status" class="tool-import-status"></span>
+        </div>
+
+        <div class="crawler-progress" id="crawl-progress-wrap" style="display:none;">
+          <div class="crawler-progress-bar"><div class="crawler-progress-fill" id="crawl-progress-fill"></div></div>
+          <span class="crawler-progress-text" id="crawl-progress-text"></span>
+        </div>
+
+        <div class="tool-section-title" style="margin-top:12px;">运行日志</div>
+        <pre class="crawler-log" id="crawl-log"></pre>
+      </div>
+    </div>
+
+    <!-- 面板2: 对比并更新 base -->
+    <div class="tool-card">
+      <div class="tool-card-header">
+        <span class="tool-icon">[比]</span>
+        <h3>对比并更新 base</h3>
+      </div>
+      <div class="tool-card-body">
+        <p class="tool-desc">
+          用 txt_compare.exe 对比 output 与 base 目录下的同名省份文件，生成报告；
+          确认后可把 output 内容写入 base（<code>{前缀}+base.csv</code>），下次启动即为新的参考库。
+        </p>
+
+        <div class="tool-form-row">
+          <button id="btn-compare-start" class="btn-primary tool-btn-primary">开始对比</button>
+          <button id="btn-compare-apply" class="btn-secondary" disabled>确认更新 base</button>
+          <button id="btn-compare-view-report" class="btn-secondary" disabled>查看上次报告</button>
+          <span id="compare-status" class="tool-import-status"></span>
+        </div>
+
+        <div class="tool-section-title" style="margin-top:12px;">运行日志</div>
+        <pre class="crawler-log" id="compare-log"></pre>
+
+        <div class="tool-result" id="compare-summary" style="display:none;flex-direction:column;align-items:flex-start;gap:4px;">
+          <span id="compare-summary-text" style="font-size:13px;color:#333;"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 面板3: 横向对比 -->
+    <div class="tool-card">
+      <div class="tool-card-header">
+        <span class="tool-icon">[横]</span>
+        <h3>横向对比（邮政 vs 邮管）</h3>
+      </div>
+      <div class="tool-card-body">
+        <p class="tool-desc">
+          对同一省份的邮政官网数据与邮管局备案数据做多阶名称匹配：
+          精确 → 归一化 → 疑似（公共子串）→ 模糊 → 跨区县末次，输出可人工核对的报告。
+        </p>
+
+        <div class="tool-section-title">数据目录</div>
+        <div class="tool-form-row">
+          <label class="crawler-check"><input type="radio" name="cross-dir" value="output" checked> output（本次抓取结果）</label>
+          <label class="crawler-check"><input type="radio" name="cross-dir" value="base"> base（参考库）</label>
+        </div>
+
+        <div class="tool-section-title">
+          省份
+          <button class="btn-small" id="cross-prov-all" style="margin-left:8px;">全选</button>
+          <button class="btn-small" id="cross-prov-none" style="margin-left:4px;">全不选</button>
+          <span id="cross-prov-count" class="tool-import-status" style="color:#888;margin-left:8px;"></span>
+        </div>
+        <div id="cross-province-list" class="crawler-province-list"></div>
+
+        <div class="tool-form-row" style="margin-top:8px;">
+          <label class="crawler-check">
+            <input type="checkbox" id="cross-fuzzy"> 启用模糊匹配（较慢，结果需人工确认）
+          </label>
+          <label class="crawler-field-label" style="margin-left:16px;">阈值</label>
+          <input type="number" id="cross-fuzzy-threshold" class="form-input" value="0.8"
+                 min="0.5" max="1" step="0.05" style="width:80px;" disabled>
+        </div>
+
+        <div class="tool-form-row" style="margin-top:10px;">
+          <button id="btn-cross-start" class="btn-primary tool-btn-primary">开始横向对比</button>
+          <button id="btn-cross-cancel" class="btn-secondary" disabled>取消</button>
+          <button id="btn-cross-view-report" class="btn-secondary" disabled>查看上次报告</button>
+          <span id="cross-status" class="tool-import-status"></span>
+        </div>
+
+        <div class="tool-section-title" style="margin-top:12px;">运行日志</div>
+        <pre class="crawler-log" id="cross-log"></pre>
+      </div>
+    </div>
+
+  </div>
+</div>
+
 <script src="js/data.js"></script>
 <script src="js/store.js"></script>
+<script src="js/postodb.js"></script>
 <script src="js/stats.js"></script>
 <script src="js/map.js"></script>
 <script>
@@ -621,6 +798,7 @@ const Dialog = {
 };
 </script>
 <script src="js/tools.js"></script>
+<script src="js/crawler.js"></script>
 <script src="js/form.js"></script>
 <script src="js/app.js"></script>
 </body>

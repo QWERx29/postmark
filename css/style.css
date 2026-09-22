@@ -680,13 +680,15 @@ body {
   padding: 20px 24px;
   min-height: calc(100vh - 100px);
 }
-#tools-header {
+#tools-header,
+#po-search-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 20px;
 }
-#tools-header h2 {
+#tools-header h2,
+#po-search-header h2 {
   font-size: 20px;
   font-weight: 600;
   color: #333;
@@ -695,6 +697,18 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(480px, 1fr));
   gap: 16px;
+}
+
+/* ===== 网点检索页面 (顶栏独立入口) ===== */
+#po-search-page {
+  display: none;
+  flex-direction: column;
+  padding: 20px 24px;
+  min-height: calc(100vh - 100px);
+}
+#po-search-container {
+  display: flex;
+  flex-direction: column;
 }
 .tool-card {
   background: #fff;
@@ -908,3 +922,486 @@ body {
   }
 }
 
+/* ============================================================
+   PO 数据库导入 — 进度条
+   ============================================================ */
+.tool-progress-wrapper {
+  display: none;
+  margin-bottom: 12px;
+}
+.tool-progress-bar {
+  height: 6px;
+  background: #f0f0f0;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.tool-progress-bar-inner {
+  height: 100%;
+  width: 0%;
+  background: #00991A;
+  border-radius: 3px;
+  transition: width .3s ease;
+}
+.tool-progress-text {
+  font-size: 12px;
+  color: #888;
+  display: block;
+  margin-top: 4px;
+}
+
+/* ============================================================
+   PO 数据库导入 — 结果区
+   ============================================================ */
+.tool-import-results {
+  display: none;
+}
+.tool-import-errors {
+  display: none;
+  padding: 10px 14px;
+  border: 1px solid #ffa39e;
+  border-radius: 4px;
+  background: #fff2f0;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: #cf1322;
+  white-space: pre-wrap;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.tool-import-status {
+  font-size: 13px;
+  margin-left: 8px;
+}
+
+/* ============================================================
+   录入表单 — PO 自动填充建议下拉框
+   ============================================================ */
+.po-suggestions {
+  display: none;
+  position: absolute;
+  width: 100%;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid #d9d9d9;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: 0 4px 12px rgba(0,0,0,.12);
+  z-index: 200;
+  margin-top: 2px;
+}
+.po-suggestions-header {
+  padding: 6px 10px;
+  font-size: 11px;
+  color: #999;
+  background: #fafafa;
+  border-bottom: 1px solid #f0f0f0;
+}
+.po-suggestion-item {
+  padding: 8px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  border-bottom: 1px solid #f5f5f5;
+  color: #333;
+  transition: background .15s;
+}
+.po-suggestion-item:hover {
+  background: #e8f5e9;
+  color: #00991A;
+}
+.po-suggestion-item:last-child {
+  border-bottom: none;
+}
+.po-suggestion-item .po-si-name {
+  font-weight: 500;
+}
+.po-suggestion-item .po-si-loc {
+  font-size: 11px;
+  color: #999;
+  margin-left: 8px;
+}
+.po-suggestion-item .po-si-code {
+  font-size: 11px;
+  color: #aaa;
+  float: right;
+}
+
+/* ============================================================
+   PO 数据库导入 — 管理表格
+   ============================================================ */
+.tool-po-table-wrap {
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid #f0f0f0;
+  border-radius: 4px;
+}
+.tool-po-table-wrap::-webkit-scrollbar { width: 4px; }
+.tool-po-table-wrap::-webkit-scrollbar-thumb { background: #ddd; border-radius: 2px; }
+.tool-po-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.tool-po-table th {
+  position: sticky; top: 0;
+  padding: 7px 8px;
+  text-align: left;
+  font-weight: 600;
+  color: #666;
+  background: #fafafa;
+  border-bottom: 2px solid #eee;
+}
+.tool-po-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid #f5f5f5;
+  color: #333;
+}
+.tool-po-table tr:hover td { background: #fafafa; }
+/* 属地 + 名称 + 邮编 与已收集记录一致 */
+.tool-po-table td.po-collected {
+  color: #00991A;
+  font-weight: 600;
+}
+.tpo-src {
+  font-weight: 600;
+}
+.tpo-src.post { color: #00991A; }
+.tpo-src.spb  { color: #1976d2; }
+.tool-po-table .tpo-src { font-size: 11px; }
+.tool-po-table .tpo-time { font-size: 11px; color: #999; }
+.tool-po-table .tpo-del {
+  padding: 0 6px;
+  font-size: 14px;
+  line-height: 1;
+  color: #999;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+.tool-po-table .tpo-del:hover {
+  color: #ff4d4f;
+  background: #fff2f0;
+}
+
+
+/* ============================================================
+   数据抓取页面
+   ============================================================ */
+#crawler-page {
+  display: none;
+  flex-direction: column;
+  padding: 20px 24px;
+  min-height: calc(100vh - 100px);
+}
+#crawler-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+#crawler-header h2 {
+  font-size: 20px;
+  font-weight: 600;
+  color: #333;
+}
+#crawler-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+#crawler-container .tool-card-body {
+  padding: 16px 20px 20px;
+}
+
+/* 主操作按钮：与工具箱内联样式一致，改由类统一管理 */
+.tool-btn-primary {
+  background: #00991A;
+  color: #fff;
+  border: none;
+  padding: 7px 20px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+}
+.tool-btn-primary:hover:not(:disabled) { background: #00801A; }
+.tool-btn-primary:disabled {
+  background: #d9d9d9;
+  color: #888;
+  cursor: not-allowed;
+}
+
+/* 复选/单选标签 */
+.crawler-check {
+  display: inline-flex;
+  align-items: center;
+  font-size: 13px;
+  color: #333;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.crawler-check input { margin-right: 4px; cursor: pointer; }
+
+.crawler-field-label {
+  font-size: 13px;
+  color: #555;
+}
+.crawler-unit {
+  font-size: 13px;
+  color: #888;
+  margin-left: -4px;
+}
+
+/* 省份多选网格 */
+.crawler-province-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 6px 10px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 10px 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 4px;
+  background: #fafafa;
+  margin-bottom: 12px;
+}
+
+/* 运行日志 */
+.crawler-log {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #d4d4d4;
+  background: #1e1e1e;
+  border-radius: 4px;
+  padding: 10px 12px;
+  max-height: 320px;
+  overflow-y: auto;
+  white-space: pre;
+  margin: 0;
+  tab-size: 4;
+}
+
+/* 进度条 */
+.crawler-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.crawler-progress-bar {
+  flex: 1;
+  height: 8px;
+  background: #f0f0f0;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.crawler-progress-fill {
+  height: 100%;
+  width: 0;
+  background: #00991A;
+  border-radius: 4px;
+  transition: width .3s ease;
+}
+.crawler-progress-text {
+  font-size: 12px;
+  color: #666;
+  white-space: nowrap;
+  min-width: 120px;
+  text-align: right;
+}
+
+/* 横向对比汇总表 */
+.crawler-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.crawler-table th,
+.crawler-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid #f0f0f0;
+}
+.crawler-table th {
+  background: #fafafa;
+  color: #555;
+  font-weight: 600;
+}
+.crawler-table tbody tr:hover,
+.crawler-table tr:hover { background: #fafafa; }
+.crawler-table-total td {
+  font-weight: 700;
+  color: #333;
+  border-top: 2px solid #e8e8e8;
+}
+
+/* ===== 可折叠标题（运行日志 / 报告分段共用） ===== */
+.collapsible {
+  cursor: pointer;
+  user-select: none;
+}
+.collapsible:hover { color: #00991A; }
+.collapsible .collapse-arrow {
+  display: inline-block;
+  width: 12px;
+  margin-left: 6px;
+  color: #999;
+  font-size: 11px;
+}
+.collapsible:hover .collapse-arrow { color: #00991A; }
+
+/* 收起状态下标题行右侧的「最新一行日志」提示 */
+.log-hint {
+  font-weight: 400;
+  color: #999;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+}
+
+/* ===== 报告弹窗 ===== */
+.report-modal .modal-container { max-width: 1000px; }
+
+.rm-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 24px;
+  border-bottom: 1px solid #f0f0f0;
+}
+.rm-head-text h3 { font-size: 16px; font-weight: 600; }
+.rm-subtitle {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #888;
+  word-break: break-all;
+}
+.rm-close {
+  flex: none;
+  width: 28px; height: 28px;
+  border: none; background: none;
+  font-size: 20px; line-height: 1; color: #999;
+  border-radius: 4px; cursor: pointer; transition: all .2s;
+}
+.rm-close:hover { background: #f0f0f0; color: #333; }
+
+.rm-body {
+  padding: 16px 24px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+/* 省份下拉框：未选择时只显示上方的概览卡片 */
+.rm-selector-wrap { margin-bottom: 14px; }
+.rm-selector-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #fafafa;
+  border: 1px solid #f0f0f0;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #555;
+}
+.rm-selector-bar select { min-width: 220px; }
+.rm-selector-detail { margin-top: 12px; }
+.rm-selector-detail > .rm-heading:first-child { margin-top: 0; }
+.rm-actions {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 12px 24px;
+  border-top: 1px solid #f0f0f0;
+}
+
+/* 汇总卡片 */
+.rm-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.rm-card {
+  flex: 1 1 120px;
+  min-width: 110px;
+  padding: 10px 12px;
+  background: #fafafa;
+  border: 1px solid #f0f0f0;
+  border-radius: 6px;
+  text-align: center;
+}
+.rm-card-value { font-size: 20px; font-weight: 700; color: #333; line-height: 1.2; }
+.rm-card-label { margin-top: 4px; font-size: 12px; color: #888; }
+
+.rm-heading {
+  margin: 16px 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #555;
+}
+.rm-body > .rm-heading:first-child { margin-top: 0; }
+
+/* 折叠分段 */
+.rm-section {
+  border: 1px solid #f0f0f0;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.rm-sec-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 9px 30px 9px 12px;   /* 右侧留出箭头的位置 */
+  background: #fafafa;
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+.rm-sec-header:hover { background: #f2f2f2; }
+.rm-sec-header strong { font-weight: 600; color: #333; }
+.rm-count { font-size: 12px; color: #555; }
+/* 说明文字独占一行，箭头绝对定位在首行右侧，不会被挤到第三行去 */
+.rm-desc { flex: 1 1 100%; font-size: 12px; color: #999; }
+.rm-sec-header .collapse-arrow {
+  position: absolute;
+  right: 10px;
+  top: 9px;
+  margin-left: 0;
+}
+.rm-sec-body { display: none; padding: 4px 12px 10px; }
+
+/* 分段里再套分段（智能判别：逐文件分段 → 逐个连续变化区块）——
+   加一道左边线，让层级看得出来 */
+.rm-sec-body .rm-section { border-left: 3px solid #e9e9e9; }
+
+.rm-badge {
+  flex: none;
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: #999;
+}
+.rm-badge-ok      { background: #28a745; }
+.rm-badge-norm    { background: #0d6efd; }
+.rm-badge-suspect { background: #fa8c16; }
+.rm-badge-fuzzy   { background: #d9534f; }
+.rm-badge-cross   { background: #6f42c1; }
+.rm-badge-post    { background: #0d6efd; }
+.rm-badge-warn    { background: #fa8c16; }
+.rm-badge-prov    { background: #6c757d; }
+
+/* 表格与长文本 */
+.rm-table-wrap { overflow-x: auto; }
+.rm-table { font-size: 12px; }
+.rm-table th, .rm-table td { padding: 5px 8px; }
+.rm-footnote { margin-top: 6px; font-size: 12px; color: #999; }
+.rm-pre {
+  max-height: 360px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}

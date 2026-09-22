@@ -6,5 +6,18 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Node
+node_modules/
+release/
+
 # Claude
 .claude/
+
+# 爬虫产出与回归验证临时文件
+output/
+_regress_*.json
+scripts/_tmp_realdiff/
+scripts/_realdiff.json
+
+# Python
+__pycache__/

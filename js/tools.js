@@ -8,6 +8,11 @@
 
   const $ = (id) => document.getElementById(id);
 
+  // 网点检索 / 随机网点：供 app.js 在进入页面时刷新
+  // （网点数据在应用启动后才从 base 导入，初始化时下拉可能还是空的）
+  let refreshPOSearch = () => {};
+  let refreshRandomPO = () => {};
+
   // ============================================================
   // 工具1: 机构号生成器
   // ============================================================
@@ -386,35 +391,219 @@
 			URL.revokeObjectURL(url);
 		});
 	}
-// 工具4: Base64 编解码
   // ============================================================
-  function initBase64Tool() {
-    const input = $('tool-b64-input');
-    const output = $('tool-b64-output');
-    const btn = $('tool-b64-exec');
-    const mode = $('tool-b64-mode');
+  // 已收集记录索引 — 用于在网点检索结果中标记「已收集」
+  // 匹配口径: 属地(省 + 区县) + 名称 + 邮编 全部一致，不计「市」
+  // 仅参考 POST 数据源，SPB 不参与匹配
+  // ============================================================
+  const COLLECTED_SEP = '\u0001';
 
-    if (!btn) return;
+  function normField(s) {
+    return (s == null ? '' : String(s)).trim();
+  }
 
-    btn.addEventListener('click', () => {
-      const text = input.value;
-      const isEncode = mode.value === 'encode';
+  /**
+   * 归一化网点名称: 去掉末尾的状态括注
+   * 参考库里有 651 条形如「安大新区邮政所（暂停）」「新何邮政所（撤销）」
+   * 括注是状态标注而非名称本身，不参与匹配
+   */
+  function normName(s) {
+    let name = normField(s);
+    const trailingParen = /\s*[（(][^（()）]*[）)]\s*$/;
+    while (trailingParen.test(name)) name = name.replace(trailingParen, '');
+    return name.trim();
+  }
 
-      try {
-        if (isEncode) {
-          output.value = btoa(unescape(encodeURIComponent(text)));
-        } else {
-          output.value = decodeURIComponent(escape(atob(text.trim())));
-        }
-      } catch (e) {
-        output.value = '错误: ' + e.message;
+  /** 匹配键: 省 + 区县 + 名称(去尾部括注) + 邮编 */
+  function collectedKey(r) {
+    return [r.province, r.district, normName(r.name), r.postalCode]
+      .map(normField).join(COLLECTED_SEP);
+  }
+
+  let _collectedKeys = null;
+
+  function getCollectedKeys() {
+    if (_collectedKeys) return _collectedKeys;
+    const keys = new Set();
+    if (typeof RecordStore !== 'undefined') {
+      for (const rec of RecordStore.getAll()) {
+        // 记录里叫 postOffice，参考库里叫 name
+        keys.add(collectedKey({
+          province: rec.province,
+          district: rec.district,
+          name: rec.postOffice,
+          postalCode: rec.postalCode,
+        }));
       }
+    }
+    _collectedKeys = keys;
+    return _collectedKeys;
+  }
+
+  // 记录增删改后索引失效，下次检索时重建
+  if (typeof RecordStore !== 'undefined') {
+    RecordStore.onChange(() => { _collectedKeys = null; });
+  }
+
+  /** 判断参考库网点是否已被收集（SPB 不参与） */
+  function isCollected(rec) {
+    if (rec.source !== 'post') return false;
+    return getCollectedKeys().has(collectedKey(rec));
+  }
+
+  // ============================================================
+  // 工具4: 网点检索
+  // ============================================================
+  /** 未指定省级行政区时的展示上限；指定省份后不再截断 */
+  const SEARCH_LIMIT = 200;
+
+  function initPOSearchTool() {
+    const provinceSel = $('tool-po-search-province');
+    const citySel = $('tool-po-search-city');
+    const districtSel = $('tool-po-search-district');
+    const sourceSel = $('tool-po-search-source');
+    const keywordInput = $('tool-po-search-input');
+    const clearBtn = $('tool-po-search-clear');
+    const bodyEl = $('tool-po-search-body');
+    const metaEl = $('tool-po-search-meta');
+    const emptyEl = $('tool-po-search-empty');
+
+    if (!provinceSel) return;
+
+    let debounceTimer = null;
+
+    function esc(s) {
+      const d = document.createElement('div');
+      d.textContent = s == null ? '' : String(s);
+      return d.innerHTML;
+    }
+
+    // ---- 填充筛选下拉 ----
+    function populateProvinces() {
+      const provs = PODatabase.getDataProvinces();
+      provinceSel.innerHTML = '<option value="">全部省份</option>';
+      provs.forEach(p => {
+        provinceSel.innerHTML += `<option value="${esc(p.name)}">${esc(p.name)}（${p.postCount + p.spbCount}）</option>`;
+      });
+    }
+
+    function populateCities() {
+      const provName = provinceSel.value;
+      citySel.innerHTML = '<option value="">全部城市</option>';
+      citySel.disabled = !provName;
+      if (provName) {
+        PODatabase.getDataCities(provName).forEach(c => {
+          citySel.innerHTML += `<option value="${esc(c)}">${esc(c)}</option>`;
+        });
+      }
+    }
+
+    function populateDistricts() {
+      const provName = provinceSel.value;
+      const cityName = citySel.value;
+      districtSel.innerHTML = '<option value="">全部区县</option>';
+      districtSel.disabled = !cityName;
+      if (provName && cityName) {
+        PODatabase.getDataDistricts(provName, cityName).forEach(d => {
+          districtSel.innerHTML += `<option value="${esc(d)}">${esc(d)}</option>`;
+        });
+      }
+    }
+
+    // ---- 执行检索 ----
+    function runSearch() {
+      const query = {
+        province: provinceSel.value,
+        city: citySel.value,
+        district: districtSel.value,
+        source: sourceSel.value,
+        keyword: keywordInput.value.trim(),
+        // 已指定省级行政区时不再截断，有多少展示多少
+        limit: provinceSel.value ? Number.MAX_SAFE_INTEGER : SEARCH_LIMIT,
+      };
+      const results = PODatabase.search(query);
+      const total = PODatabase.count();
+
+      if (results.length === 0) {
+        bodyEl.innerHTML = '';
+        emptyEl.style.display = 'block';
+        emptyEl.textContent = total === 0
+          ? '暂无网点数据，请确保 base 目录有数据并重启应用'
+          : '没有符合条件的网点';
+        metaEl.textContent = `网点总数 ${total} 条`;
+        return;
+      }
+
+      let collectedCount = 0;
+      const rows = results.map(r => {
+        // 省 + 区县 + 名称 + 邮编 与已收集记录一致的 POST 网点，名称标绿
+        const hit = isCollected(r);
+        if (hit) collectedCount++;
+        return `
+        <tr>
+          <td${hit ? ' class="po-collected" title="该网点已有收集记录"' : ''}>${esc(r.name)}</td>
+          <td>${esc(r.province)}${r.city ? ' / ' + esc(r.city) : ''}${r.district ? ' / ' + esc(r.district) : ''}</td>
+          <td>${r.postalCode ? esc(r.postalCode) : '-'}</td>
+          <td><span class="tpo-src ${r.source}">${r.source === 'post' ? 'POST' : 'SPB'}</span></td>
+        </tr>`;
+      }).join('');
+
+      emptyEl.style.display = 'none';
+      const limitNote = provinceSel.value ? '' : `（最多显示 ${SEARCH_LIMIT} 条）`;
+      metaEl.textContent = `网点总数 ${total} 条，匹配 ${results.length} 条${limitNote}`
+        + (collectedCount > 0 ? `，其中 ${collectedCount} 条已收集` : '');
+      bodyEl.innerHTML = rows;
+    }
+
+    // ---- 事件绑定 ----
+    provinceSel.addEventListener('change', () => {
+      populateCities();
+      populateDistricts();
+      runSearch();
+    });
+    citySel.addEventListener('change', () => {
+      populateDistricts();
+      runSearch();
+    });
+    districtSel.addEventListener('change', runSearch);
+    sourceSel.addEventListener('change', runSearch);
+    keywordInput.addEventListener('input', () => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(runSearch, 200);
+    });
+    keywordInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { clearTimeout(debounceTimer); runSearch(); }
+    });
+    clearBtn.addEventListener('click', () => {
+      provinceSel.value = '';
+      citySel.value = '';
+      districtSel.value = '';
+      sourceSel.value = '';
+      keywordInput.value = '';
+      populateCities();
+      populateDistricts();
+      runSearch();
     });
 
-    // Ctrl+Enter 快捷键
-    input.addEventListener('keydown', (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') btn.click();
-    });
+    // ---- 刷新（重建筛选下拉，尽量保留当前选择） ----
+    function refresh() {
+      const keepProvince = provinceSel.value;
+      const keepCity = citySel.value;
+      const keepDistrict = districtSel.value;
+
+      populateProvinces();
+      provinceSel.value = keepProvince;
+      populateCities();
+      citySel.value = keepCity;
+      populateDistricts();
+      districtSel.value = keepDistrict;
+
+      runSearch();
+    }
+
+    // ---- 初始渲染 ----
+    refresh();
+    refreshPOSearch = refresh;
   }
 
   // ============================================================
@@ -482,71 +671,147 @@
   }
 
   // ============================================================
-  // 工具6: 随机地名生成器
+  // 工具5: 随机网点
   // ============================================================
-  function initPlaceTool() {
-    const btn = $('tool-place-gen');
-    const codeEl = $('tool-place-code');
-    const maxInput = $('tool-place-max');
-    const btnRand = $('tool-place-rand');
+  function initRandomPOTool() {
+    const sourceSel = $('tool-rnd-source');
+    const provinceSel = $('tool-rnd-province');
+    const citySel = $('tool-rnd-city');
+    const districtSel = $('tool-rnd-district');
+    const genBtn = $('tool-rnd-gen');
+    const resultEl = $('tool-rnd-result');
+    const nameEl = $('tool-rnd-name');
+    const locEl = $('tool-rnd-loc');
+    const postalEl = $('tool-rnd-postal');
+    const srcEl = $('tool-rnd-src');
+    const countEl = $('tool-rnd-count');
 
-    if (!btn) return;
+    if (!genBtn) return;
 
-    let currentPlace = '';
-
-    function pickRandom(arr) {
-      return arr[Math.floor(Math.random() * arr.length)];
+    function esc(s) {
+      const d = document.createElement('div');
+      d.textContent = s == null ? '' : String(s);
+      return d.innerHTML;
     }
 
-    function generatePlace() {
-      const provinces = PostmarkData.getAllProvinces();
-      if (!provinces.length) { codeEl.textContent = '暂无行政区数据'; return ''; }
+    // ---- 填充筛选下拉 ----
+    function populateProvinces() {
+      provinceSel.innerHTML = '<option value="">全部省份</option>';
+      PODatabase.getDataProvinces().forEach(p => {
+        provinceSel.innerHTML += `<option value="${esc(p.name)}">${esc(p.name)}（${p.postCount + p.spbCount}）</option>`;
+      });
+    }
 
-      const prov = pickRandom(provinces);
-      let cityName, district;
-
-      if (MUNICIPALITIES.includes(prov.name)) {
-        cityName = prov.name;
-        const dists = PostmarkData.getDistricts(cityName);
-        district = dists.length ? pickRandom(dists) : cityName;
-      } else {
-        const cityNames = PostmarkData.getProvinceCityNames(prov.name);
-        if (!cityNames.length) { codeEl.textContent = '无城市数据'; return ''; }
-        cityName = pickRandom(cityNames);
-        const dists = PostmarkData.getDistricts(cityName);
-        district = dists.length ? pickRandom(dists) : cityName;
+    function populateCities() {
+      const provName = provinceSel.value;
+      citySel.innerHTML = '<option value="">全部城市</option>';
+      citySel.disabled = !provName;
+      if (provName) {
+        PODatabase.getDataCities(provName).forEach(c => {
+          citySel.innerHTML += `<option value="${esc(c)}">${esc(c)}</option>`;
+        });
       }
-
-      return prov.name + '/' + cityName + '/' + district;
     }
 
-    function appendRandom() {
-      if (!currentPlace) { btn.click(); return; }
-      const max = parseInt(maxInput.value, 10);
-      if (isNaN(max) || max < 0 || max > 100) { maxInput.value = '99'; }
-      const rand = String(Math.floor(Math.random() * (max + 1))).padStart(2, '0');
-      codeEl.textContent = currentPlace + '/' + rand;
+    function populateDistricts() {
+      const provName = provinceSel.value;
+      const cityName = citySel.value;
+      districtSel.innerHTML = '<option value="">全部区县</option>';
+      districtSel.disabled = !cityName;
+      if (provName && cityName) {
+        PODatabase.getDataDistricts(provName, cityName).forEach(d => {
+          districtSel.innerHTML += `<option value="${esc(d)}">${esc(d)}</option>`;
+        });
+      }
     }
 
-    btn.addEventListener('click', () => {
-      currentPlace = generatePlace();
-      if (currentPlace) appendRandom();
-    });
+    // ---- 随机抽取 ----
+    function show(record) {
+      nameEl.textContent = record.name || '(无名称)';
+      locEl.textContent = [record.province, record.city, record.district]
+        .filter(Boolean).join(' / ') || '-';
+      postalEl.textContent = record.postalCode || '-';
+      srcEl.textContent = record.source === 'post' ? 'POST' : 'SPB';
+      srcEl.className = 'tpo-src ' + record.source;
+      resultEl.style.display = 'flex';
+    }
 
-    btnRand.addEventListener('click', appendRandom);
-    maxInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') appendRandom();
+    function currentPool() {
+      return PODatabase.search({
+        source: sourceSel.value,
+        province: provinceSel.value,
+        city: citySel.value,
+        district: districtSel.value,
+        limit: Number.MAX_SAFE_INTEGER,
+      });
+    }
+
+    /** 更新候选数量提示 */
+    function updateCount(pool) {
+      countEl.textContent = pool.length > 0
+        ? `候选 ${pool.length} 个网点`
+        : (PODatabase.count() === 0
+            ? '暂无网点数据，请确保 base 目录有数据并重启应用'
+            : '没有符合条件的网点');
+    }
+
+    function generate() {
+      const pool = currentPool();
+      updateCount(pool);
+      if (pool.length === 0) { resultEl.style.display = 'none'; return; }
+      show(pool[Math.floor(Math.random() * pool.length)]);
+    }
+
+    // ---- 事件绑定 ----
+    sourceSel.addEventListener('change', generate);
+    provinceSel.addEventListener('change', () => {
+      populateCities();
+      populateDistricts();
+      generate();
     });
+    citySel.addEventListener('change', () => {
+      populateDistricts();
+      generate();
+    });
+    districtSel.addEventListener('change', generate);
+    genBtn.addEventListener('click', generate);
+
+    // ---- 刷新（重建筛选下拉，尽量保留当前选择） ----
+    function refresh() {
+      const keepProvince = provinceSel.value;
+      const keepCity = citySel.value;
+      const keepDistrict = districtSel.value;
+
+      populateProvinces();
+      provinceSel.value = keepProvince;
+      populateCities();
+      citySel.value = keepCity;
+      populateDistricts();
+      districtSel.value = keepDistrict;
+
+      // 只更新候选数，不重新抽签，避免每次进入工具箱都换掉已生成的结果
+      updateCount(currentPool());
+    }
+
+    // ---- 初始渲染 ----
+    refresh();
+    refreshRandomPO = refresh;
   }
   function init() {
     initInstCodeTool();
     initBarcodeTool();
     initBarcodeDisplayTool();
-    initBase64Tool();
+    initPOSearchTool();
     initJsonTool();
-    initPlaceTool();
+    initRandomPOTool();
     initCopyButtons();
   }
+
+  // 对外接口（app.js 使用）
+  window.Tools = {
+    refreshPOSearch: () => refreshPOSearch(),
+    refreshRandomPO: () => refreshRandomPO(),
+  };
 
   // DOM 就绪后初始化
   if (document.readyState === 'loading') {

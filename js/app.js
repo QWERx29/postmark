@@ -113,7 +113,11 @@
   let recordsPageOpen = false;
   let batchModalOpen = false;
   let toolsPageOpen = false;
+  let poSearchPageOpen = false;
+  let crawlerPageOpen = false;
   const toolsPage = $('tools-page');
+  const poSearchPage = $('po-search-page');
+  const crawlerPage = $('crawler-page');
   const recordsPage = $('records-page');
   const recordsTbody = $('records-tbody');
   const recordsCount = $('records-count');
@@ -191,7 +195,7 @@
     recordsPageOpen = false;
     // 恢复主视图
     recordsPage.style.display = 'none';
-    $('main-container').style.display = 'flex';
+    $('main-container').style.display = '';
     $('btn-add-record-fab').style.display = '';
     // 重置筛选条件
     filterProvince = '';
@@ -472,18 +476,77 @@
     $('main-container').style.display = 'none';
     $('btn-add-record-fab').style.display = 'none';
     if (recordsPageOpen) hideRecordsPage();
+    if (poSearchPageOpen) hidePOSearchPage();
+    if (crawlerPageOpen) hideCrawlerPage();
     toolsPage.style.display = 'flex';
+    // 网点数据在启动后才从 base 目录导入，进入页面时重建「随机网点」的筛选下拉
+    if (typeof Tools !== 'undefined') Tools.refreshRandomPO();
   }
 
   function hideToolsPage() {
     toolsPageOpen = false;
     toolsPage.style.display = 'none';
-    $('main-container').style.display = 'flex';
+    $('main-container').style.display = '';
     $('btn-add-record-fab').style.display = '';
   }
 
   $('btn-show-tools').addEventListener('click', showToolsPage);
   $('btn-tools-back').addEventListener('click', hideToolsPage);
+
+  // ============================================================
+  // 网点检索页面
+  // ============================================================
+  function showPOSearchPage() {
+    poSearchPageOpen = true;
+    $('main-container').style.display = 'none';
+    $('btn-add-record-fab').style.display = 'none';
+    if (recordsPageOpen) hideRecordsPage();
+    if (toolsPageOpen) hideToolsPage();
+    if (crawlerPageOpen) hideCrawlerPage();
+    poSearchPage.style.display = 'flex';
+    // 网点数据在启动后才从 base 目录导入，进入页面时重新拉取筛选条件与结果
+    if (typeof Tools !== 'undefined') Tools.refreshPOSearch();
+  }
+
+  function hidePOSearchPage() {
+    poSearchPageOpen = false;
+    poSearchPage.style.display = 'none';
+    $('main-container').style.display = '';
+    $('btn-add-record-fab').style.display = '';
+  }
+
+  $('btn-show-po-search').addEventListener('click', showPOSearchPage);
+  $('btn-po-search-back').addEventListener('click', hidePOSearchPage);
+
+  // ============================================================
+  // 数据抓取页面
+  // ============================================================
+  function showCrawlerPage() {
+    crawlerPageOpen = true;
+    $('main-container').style.display = 'none';
+    $('btn-add-record-fab').style.display = 'none';
+    if (recordsPageOpen) hideRecordsPage();
+    if (toolsPageOpen) hideToolsPage();
+    if (poSearchPageOpen) hidePOSearchPage();
+    crawlerPage.style.display = 'flex';
+    if (typeof CrawlerPage !== 'undefined') CrawlerPage.refresh();
+  }
+
+  function hideCrawlerPage() {
+    crawlerPageOpen = false;
+    crawlerPage.style.display = 'none';
+    $('main-container').style.display = '';
+    $('btn-add-record-fab').style.display = '';
+    // 只停 UI 轮询，后台作业继续跑；再次进入页面会重新拉取状态
+    if (typeof CrawlerPage !== 'undefined') CrawlerPage.suspend();
+  }
+
+  $('btn-show-crawler').addEventListener('click', showCrawlerPage);
+  $('btn-crawler-back').addEventListener('click', hideCrawlerPage);
+  $('btn-refresh').addEventListener('click', () => {
+    refreshAllViews();
+    if (recordsPageOpen) renderRecordsTable(recordsSearch.value);
+  });
 
   recordsSearch.addEventListener('input', () => {
     renderRecordsTable(recordsSearch.value.trim());
@@ -539,8 +602,12 @@
   // 键盘
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+      // 报告弹窗叠在页面之上，Esc 应先收起它，而不是把整个「数据抓取」页也关掉
+      if (window.CrawlerPage && window.CrawlerPage.closeReport()) return;
       if (batchModalOpen) closeBatchModal();
       else if (toolsPageOpen) hideToolsPage();
+      else if (poSearchPageOpen) hidePOSearchPage();
+      else if (crawlerPageOpen) hideCrawlerPage();
       else if (recordsPageOpen) hideRecordsPage();
     }
   });
@@ -731,6 +798,76 @@
   initBatchProvinceLink();
 
   // ============================================================
+  // 启动时从 base 目录自动导入网点数据
+  // ============================================================
+  const BASE_SIG_KEY = 'poref_base_signature';
+
+  async function importBaseData() {
+    // 1. 获取 base 目录文件列表
+    let files;
+    try {
+      const res = await fetch('/api/base-files');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      files = await res.json();
+    } catch (e) {
+      return { error: '无法读取 base 目录: ' + e.message };
+    }
+
+    // base 目录确认为空 → 参考库同步清空，保持与 base 完全一致
+    if (!Array.isArray(files) || files.length === 0) {
+      const prev = PODatabase.count();
+      if (prev > 0) {
+        PODatabase.clear();
+        localStorage.removeItem(BASE_SIG_KEY);
+      }
+      return { empty: true, cleared: prev, total: PODatabase.count() };
+    }
+
+    // 2. 签名校验：文件未变化且已有数据则跳过，避免重复导入
+    const sig = files.map(f => `${f.name}:${f.size}:${f.mtime}`).join('|');
+    const prevSig = localStorage.getItem(BASE_SIG_KEY);
+    if (prevSig === sig && PODatabase.count() > 0) {
+      return { skipped: true, files: files.length, total: PODatabase.count() };
+    }
+
+    // 3. 拉取并解析每个 CSV
+    const buffers = [];
+    for (const f of files) {
+      const lower = f.name.toLowerCase();
+      let sourceType = null;
+      if (lower.startsWith('post')) sourceType = 'post';
+      else if (lower.startsWith('spb')) sourceType = 'spb';
+      if (!sourceType) continue;
+      try {
+        const r = await fetch('/base/' + encodeURIComponent(f.name));
+        if (!r.ok) continue;
+        buffers.push({ buffer: await r.arrayBuffer(), sourceType, name: f.name });
+      } catch (e) {
+        console.error('[PO] 拉取网点文件失败:', f.name, e);
+      }
+    }
+
+    if (buffers.length === 0) {
+      return { error: 'base 目录下没有可导入的网点 CSV 文件' };
+    }
+
+    // 4. 批量导入 — replace 模式：参考库完全跟随 base 目录，
+    //    上一版本的数据 (含已被删除的省份/网点) 不再保留
+    try {
+      const result = PODatabase.importCSVBulk(buffers, undefined, { mode: 'replace' });
+      localStorage.setItem(BASE_SIG_KEY, sig);
+      return {
+        imported: result.imported,
+        files: buffers.length,
+        total: result.stats.totalCount,
+        errors: result.errors.length,
+      };
+    } catch (e) {
+      return { error: e.message };
+    }
+  }
+
+  // ============================================================
   // 启动
   // ============================================================
   try {
@@ -753,5 +890,28 @@
     loadingEl.querySelector('p').textContent = '加载失败: ' + err.message;
     loadingEl.querySelector('.spinner').style.display = 'none';
   }
+
+  // 启动时自动导入 base 目录网点数据，完成后弹窗提示
+  importBaseData().then(async (result) => {
+    const stats = PODatabase.getStats();
+    const postCount = stats.provinces.reduce((s, p) => s + p.postCount, 0);
+    const spbCount  = stats.provinces.reduce((s, p) => s + p.spbCount, 0);
+    const total = stats.totalCount;
+
+    let msg;
+    if (result.error) {
+      msg = '网点数据导入失败：' + result.error;
+    } else if (result.empty) {
+      msg = result.cleared > 0
+        ? `base 目录下已无网点数据文件，参考库已同步清空（原有 ${result.cleared} 条）。`
+        : 'base 目录下没有网点数据文件，无法自动导入。';
+    } else if (result.skipped) {
+      msg = `网点数据已是最新，当前共 ${total} 条（POST ${postCount} / SPB ${spbCount}）。`;
+    } else {
+      msg = `已从 base 目录覆盖导入网点数据：本次 ${result.imported} 条，当前共 ${total} 条（POST ${postCount} / SPB ${spbCount}）。`;
+      if (result.errors > 0) msg += `\n（另有 ${result.errors} 条解析错误）`;
+    }
+    await Dialog.alert(msg);
+  });
 
 })();
