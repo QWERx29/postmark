@@ -24,6 +24,7 @@
  *   hasScenicPostmark: boolean,
  *   scenicNames: string[], // 风景/文化日戳名称列表
  *   notes: string,
+ *   photos: string[],     // 已保存图片文件名（相对 output/images/，见 img-export.js）
  *   createdAt: string     // ISO 时间戳
  * }
  */
@@ -103,6 +104,7 @@ const RecordStore = {
     if (!record.createdAt) record.createdAt = new Date().toISOString();
     if (!record.stampNumbers) record.stampNumbers = [];
     if (!record.scenicNames) record.scenicNames = [];
+    if (!record.photos) record.photos = [];
     records.push(record);
     this._save(records);
     return record;

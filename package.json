@@ -4,7 +4,14 @@
   "description": "新一代日戳管理系统 — 桌面版",
   "main": "main.js",
   "scripts": {
-    "start": "electron .",
+    "start": "node scripts/start.js",
+    "start:web": "node launch.js",
+    "start:server": "node server.js",
+    "migrate:browser": "node scripts/migrate-to-chrome.js",
+    "migrate:webview2": "node scripts/migrate-to-chrome.js --preset=webview2",
+    "stage:tauri": "node scripts/stage-tauri-resources.js",
+    "build:tauri": "pwsh -File scripts/dev-build-tauri.ps1",
+    "start:electron": "electron .",
     "build": "electron-builder --win portable",
     "build:installer": "electron-builder --win"
   },
@@ -27,6 +34,7 @@
       "!release/**",
       "!.claude/**",
       "!output/**",
+      "!data/**",
       "!scripts/**",
       "!__pycache__/**",
       "!_regress_*.json"

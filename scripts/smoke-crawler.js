@@ -249,7 +249,188 @@ async function testCompareApply(tmpDir) {
   eq('回写后内容 = output 内容（西单被替换掉）', after.length, 1);
 }
 
-// ============ 6. 横向对比作业 ============
+// ============ 5b. base_old 归档规则 ============
+/**
+ * 覆盖需求：base 覆盖式更新；名称变化 / 撤销 / 疑似撤下 → base_old；
+ * 营业状态变化 → 直接覆盖原有内容；重新出现的记录从归档里移出。
+ */
+async function testBaseOldRules(tmpDir) {
+  console.log('\n[5b] base_old 归档规则');
+
+  const outDir = path.join(tmpDir, 'old-out');
+  const baseDir = path.join(tmpDir, 'old-base');
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.mkdirSync(baseDir, { recursive: true });
+
+  const postHeader = Engine.csvLine(Engine.POST_FIELDS);
+  const spbHeader = Engine.csvLine(Engine.SPB_FIELDS);
+  const post = (dist, name, pc) => Engine.csvLine(['北京市', '北京市', dist, name, pc, '北京市' + dist]);
+  const spb = (dist, name, svc, link) => Engine.csvLine(['上海市', '上海市', dist, name, svc, link]);
+  const writeOutPost = (rows) => fs.writeFileSync(path.join(outDir, 'postbj-20260920.csv'),
+    iconv.encode([postHeader, ...rows].join('\r\n') + '\r\n', 'gbk'));
+
+  // base：东单（不变）/ 西单（转暂停）/ 朝阳门（更名）/ 中关村（撤销）/ 丰台（output 里没有）
+  fs.writeFileSync(path.join(baseDir, 'postbj+base.csv'), iconv.encode([
+    postHeader,
+    post('东城区', '东单邮政支局', '100005'),
+    post('西城区', '西单邮政支局', '100031'),
+    post('朝阳区', '朝阳门邮政支局', '100020'),
+    post('海淀区', '中关村邮政支局', '100080'),
+    post('丰台区', '丰台邮政支局', '100071'),
+  ].join('\r\n') + '\r\n', 'gbk'));
+  fs.writeFileSync(path.join(baseDir, 'spbsh+base.csv'), iconv.encode([
+    spbHeader,
+    spb('黄浦区', '南京东路邮政所', '信件', 'http://a'),
+  ].join('\r\n') + '\r\n', 'gbk'));
+
+  // output：西单加「（暂停）」、朝阳门改名、中关村标「（撤销）」、丰台消失
+  writeOutPost([
+    post('东城区', '东单邮政支局', '100005'),
+    post('西城区', '西单邮政支局（暂停）', '100031'),
+    post('朝阳区', '朝阳门大街邮政支局', '100020'),
+    post('海淀区', '中关村邮政支局（撤销）', '100080'),
+  ]);
+  fs.writeFileSync(path.join(outDir, 'spbsh-20260920.csv'), iconv.encode([
+    spbHeader,
+    spb('黄浦区', '南京东路邮政所（撤销）', '信件', 'http://a'),
+  ].join('\r\n') + '\r\n', 'gbk'));
+
+  Engine.configure({ outputDir: outDir, baseDir: baseDir });
+
+  // ---- 更新方案（不落盘）----
+  const plan = Engine.computeBaseUpdate();
+  eq('方案：当前库条数（撤销不进库）', plan.currentTotal, 3);
+  eq('方案：已撤销条数', plan.revokedTotal, 2);
+  eq('方案：新归档条数', plan.archiveAdded, 4);
+
+  // ---- 回写 ----
+  const job = Engine.applyBase();
+  await job.done;
+  eq('回写作业状态', job.state, 'done');
+
+  const cur = Engine.readPostCsv(path.join(baseDir, 'postbj+base.csv'));
+  eq('当前库条数', cur.length, 3);
+  eq('当前库：状态变化直接覆盖', cur[1].name, '西单邮政支局（暂停）');
+  eq('当前库：更名后是新名称', cur[2].name, '朝阳门大街邮政支局');
+  check('当前库：撤销的不写入',
+    !cur.some((r) => r.name.indexOf('撤销') >= 0),
+    cur.map((r) => r.name).join(' / '));
+
+  const oldPath = path.join(baseDir, 'base_old.csv');
+  check('生成 base_old.csv', fs.existsSync(oldPath), oldPath);
+  const old = Engine.readBaseOld(oldPath);
+  const oldNames = old.map((e) => e.name);
+  eq('归档条数', old.length, 4);
+  check('归档：更名前的旧名称', oldNames.indexOf('朝阳门邮政支局') >= 0, oldNames.join(' / '));
+  check('归档：带（撤销）的记录', oldNames.indexOf('中关村邮政支局（撤销）') >= 0, oldNames.join(' / '));
+  check('归档：output 里消失的记录', oldNames.indexOf('丰台邮政支局') >= 0, oldNames.join(' / '));
+  check('归档：SPB 撤销记录', oldNames.indexOf('南京东路邮政所（撤销）') >= 0, oldNames.join(' / '));
+  check('状态变化不进归档（旧名称不该出现）',
+    oldNames.indexOf('西单邮政支局') < 0 && oldNames.indexOf('中关村邮政支局') < 0,
+    oldNames.join(' / '));
+
+  const reasonOf = (n) => (old.find((e) => e.name === n) || {}).reason;
+  eq('归档原因：更名', reasonOf('朝阳门邮政支局'), Engine.ARCHIVE_REASON.rename);
+  eq('归档原因：撤销', reasonOf('中关村邮政支局（撤销）'), Engine.ARCHIVE_REASON.revoked);
+  eq('归档原因：疑似撤下', reasonOf('丰台邮政支局'), Engine.ARCHIVE_REASON.removed);
+
+  const spbOld = old.find((e) => e.source === 'spb') || {};
+  eq('归档文件：来源列', spbOld.source, 'spb');
+  eq('归档文件：开办业务列', spbOld.services, '信件');
+  eq('归档文件：详情链接列', spbOld.detail_link, 'http://a');
+  eq('归档文件：SPB 无邮编', spbOld.postcode, '');
+  check('归档文件：有归档时间', !!spbOld.archivedAt, spbOld.archivedAt);
+
+  // 表头就是统一列，顺序固定（渲染端按列名解析，不依赖顺序）
+  const rawHeader = iconv.decode(fs.readFileSync(oldPath), 'gbk').split('\r\n')[0];
+  eq('base_old 表头', rawHeader, Engine.BASE_OLD_FIELDS.join(','));
+
+  // ---- 重新出现 → 从归档移出 ----
+  writeOutPost([
+    post('东城区', '东单邮政支局', '100005'),
+    post('西城区', '西单邮政支局（暂停）', '100031'),
+    post('朝阳区', '朝阳门大街邮政支局', '100020'),
+    post('海淀区', '中关村邮政支局（撤销）', '100080'),
+    post('丰台区', '丰台邮政支局', '100071'),
+  ]);
+  const job2 = Engine.applyBase();
+  await job2.done;
+  const old2 = Engine.readBaseOld(oldPath);
+  check('重新出现后从归档移出',
+    !old2.some((e) => e.name === '丰台邮政支局'),
+    old2.map((e) => e.name).join(' / '));
+  eq('归档剩 3 条', old2.length, 3);
+  eq('移出计数', job2.result.archiveRestored, 1);
+}
+
+// ============ 5c. 对比作业产出的参考库快照 ============
+async function testCompareRefStage(tmpDir) {
+  console.log('\n[5c] 对比作业 → 参考库快照');
+
+  const outDir = path.join(tmpDir, 'stage-out');
+  const baseDir = path.join(tmpDir, 'stage-base');
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.mkdirSync(baseDir, { recursive: true });
+
+  const header = Engine.csvLine(Engine.POST_FIELDS);
+  const row = (dist, name, pc) => Engine.csvLine(['北京市', '北京市', dist, name, pc, '北京市' + dist]);
+  fs.writeFileSync(path.join(outDir, 'postbj-20260921.csv'), iconv.encode([
+    header,
+    row('东城区', '东单邮政支局', '100005'),
+    row('海淀区', '中关村邮政支局（撤销）', '100080'),
+  ].join('\r\n') + '\r\n', 'gbk'));
+  fs.writeFileSync(path.join(baseDir, 'postbj+base.csv'), iconv.encode([
+    header,
+    row('东城区', '东单邮政支局', '100005'),
+    row('海淀区', '中关村邮政支局', '100080'),
+  ].join('\r\n') + '\r\n', 'gbk'));
+  // 只有 base 的省份：快照要把它一并带上（参考库是整份替换）
+  fs.writeFileSync(path.join(baseDir, 'spbtj+base.csv'), iconv.encode([
+    Engine.csvLine(Engine.SPB_FIELDS),
+    '天津市,天津市,和平区,和平路邮政所,信件,http://x',
+  ].join('\r\n') + '\r\n', 'gbk'));
+
+  Engine.configure({
+    outputDir: outDir,
+    baseDir: baseDir,
+    compareExeCandidates: [path.join(ROOT, 'txt_compare.exe')],
+  });
+  if (!Engine.resolveCompareExe()) {
+    check('定位到 txt_compare.exe', false, '未找到');
+    return;
+  }
+
+  const job = Engine.startCompare();
+  await job.done;
+  eq('对比作业状态', job.state, 'done');
+
+  const lib = job.result.refLibrary;
+  check('结果带参考库快照', !!lib, JSON.stringify(job.result.plan || null));
+  if (!lib) return;
+
+  const stageNames = lib.files.map((f) => f.name).sort();
+  check('快照含两个文件（含只有 base 的省份）',
+    stageNames.join(',') === 'postbj+base.csv,spbtj+base.csv', stageNames.join(','));
+  check('快照目录存在', fs.existsSync(lib.stageDir), lib.stageDir);
+  check('快照带 base_old.csv', fs.existsSync(lib.archivePath), lib.archivePath);
+  check('归档文件路径是 output 下的相对路径',
+    lib.archiveRelPath === '_refstage/base_old.csv', lib.archiveRelPath);
+
+  const stagePost = Engine.readPostCsv(path.join(lib.stageDir, 'postbj+base.csv'));
+  eq('快照：撤销记录已剔除', stagePost.length, 1);
+  eq('快照：留下的是东单', stagePost[0].name, '东单邮政支局');
+  const stageSpb = Engine.readSpbCsv(path.join(lib.stageDir, 'spbtj+base.csv'));
+  eq('快照：只有 base 的省份也带上了', stageSpb.length, 1);
+  eq('快照：SPB 名称', stageSpb[0].name, '和平路邮政所');
+
+  eq('方案：撤销计数', job.result.plan.revokedTotal, 1);
+  eq('方案：归档计数', job.result.plan.archiveTotal, 1);
+  check('方案：逐文件明细', (job.result.plan.byPrefix || []).length === 1,
+    JSON.stringify(job.result.plan.byPrefix));
+  check('对比未修改 base', fs.existsSync(path.join(baseDir, 'postbj+base.csv')) &&
+    Engine.readPostCsv(path.join(baseDir, 'postbj+base.csv')).length === 2);
+}
+
 async function testCross(tmpDir) {
   console.log('\n[6] 横向对比作业');
 
@@ -321,6 +502,8 @@ async function main() {
   testCsvRoundTrip(tmpDir);
   testHelpers(tmpDir);
   await testCompareApply(tmpDir);
+  await testBaseOldRules(tmpDir);
+  await testCompareRefStage(tmpDir);
   await testCross(tmpDir);
 
   if (process.argv.includes('--net')) {

@@ -133,8 +133,10 @@ async function main() {
   console.log('\n[3] 应用自身文件');
   const appFiles = ['main.js', 'crawler-engine.js', 'crawler-match.js', 'crawler-cities.js',
                     'crawler-intelligent.js',
+                    'img-export.js',
                     'preload.js', 'index.html', 'css/style.css',
-                    'js/crawler.js', 'js/postodb.js', 'js/data.js'];
+                    'js/crawler.js', 'js/postodb.js', 'js/data.js', 'js/idb.js',
+                    'js/image.js', 'js/image-editor.js', 'js/img-naming.js'];
   for (const f of appFiles) {
     check(`已打包 ${f}`, fs.existsSync(path.join(extractDir, f)));
   }
@@ -174,6 +176,21 @@ async function main() {
     packedCss.includes('.rm-selector-bar') && packedCss.includes('.rm-selector-detail'),
     '疑似陈旧构建：请重新 npm run build');
 
+  // 图片功能：三块拼图缺一不可 —— server require 的落盘模块、表单里的图片区、编辑器样式
+  check('打包的 server.js 已接入图片落盘模块',
+    readApp('server.js').includes("require('./img-export") &&
+    readApp('img-export.js').includes('function writeAtomic'),
+    '疑似陈旧构建：请重新 npm run build');
+  check('打包的 index.html 含日戳图片区并引入图片模块',
+    packedHtml.includes('f-photo-add') &&
+    packedHtml.includes('js/image.js') &&
+    packedHtml.includes('js/image-editor.js') &&
+    packedHtml.includes('js/img-naming.js'),
+    '疑似陈旧构建：请重新 npm run build');
+  check('打包的 css/style.css 含图片编辑器样式',
+    packedCss.includes('.ie-crop-box') && packedCss.includes('.photo-thumb'),
+    '疑似陈旧构建：请重新 npm run build');
+
   // 引擎侧：details 字段是弹窗的数据来源
   check('打包的 crawler-engine.js 含 buildCrossDetails',
     readApp('crawler-engine.js').includes('function buildCrossDetails'));
@@ -199,6 +216,22 @@ async function main() {
     packedCrawler.includes('buildCompareProvinceDetail') &&
     packedCrawler.includes('function buildCompareFileDetail') &&
     packedCrawler.includes('__summary__'),
+    '疑似陈旧构建：请重新 npm run build');
+
+  // PO 参考库改存 IndexedDB：漏打 js/idb.js 或漏改 index.html 的 script 顺序，
+  // postodb 会在运行时才炸（IdbKV is not defined），因此这里一并核对
+  const packedIdb = readApp('js/idb.js');
+  const packedPoref = readApp('js/postodb.js');
+  check('打包的 js/idb.js 含 IdbKV 实现',
+    packedIdb.includes('const IdbKV') && packedIdb.includes('function write'),
+    '疑似陈旧构建：请重新 npm run build');
+  check('打包的 index.html 已在 postodb.js 之前引入 js/idb.js',
+    packedHtml.indexOf('js/idb.js') > 0 &&
+    packedHtml.indexOf('js/idb.js') < packedHtml.indexOf('js/postodb.js'),
+    '疑似陈旧构建：请重新 npm run build');
+  check('打包的 js/postodb.js 已改用 IndexedDB',
+    packedPoref.includes('IdbKV') && packedPoref.includes('legacyUpgrade') &&
+    !/localStorage\.setItem\(DATA_PREFIX/.test(packedPoref),
     '疑似陈旧构建：请重新 npm run build');
 
   report();

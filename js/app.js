@@ -17,6 +17,45 @@
   const mapTitle = $('map-title');
 
   // ============================================================
+  // 侧边栏：折叠 / 展开 + 导航高亮
+  // ============================================================
+  const SIDEBAR_KEY = 'postmark_sidebar_collapsed';
+  const appShell = $('app-shell');
+  const btnSidebarToggle = $('btn-sidebar-toggle');
+  const navItems = Array.from(document.querySelectorAll('#sidebar .nav-item'));
+
+  /** 折叠状态只落在 #app-shell 的类上，布局与动画都在 CSS 里 */
+  function setSidebarCollapsed(collapsed, persist) {
+    appShell.classList.toggle('sidebar-collapsed', collapsed);
+    btnSidebarToggle.setAttribute('aria-expanded', String(!collapsed));
+    btnSidebarToggle.title = collapsed ? '展开侧边栏' : '折叠侧边栏';
+    if (persist) {
+      try { localStorage.setItem(SIDEBAR_KEY, collapsed ? '1' : '0'); } catch (e) { /* 隐私模式忽略 */ }
+    }
+  }
+
+  /** 高亮当前页面；pageKey 传 null 表示不高亮任何项（正常情况下总会有值） */
+  function setActiveNav(pageKey) {
+    navItems.forEach(el => {
+      el.classList.toggle('active', !!pageKey && el.dataset.page === pageKey);
+    });
+  }
+
+  (function initSidebar() {
+    let stored = null;
+    try { stored = localStorage.getItem(SIDEBAR_KEY); } catch (e) { /* ignore */ }
+    // 窄屏默认折叠，否则抽屉会直接盖住内容
+    const collapsed = stored === null ? window.innerWidth <= 900 : stored === '1';
+    setSidebarCollapsed(collapsed, false);
+    // 启动即地图总览
+    setActiveNav('overview');
+  })();
+
+  btnSidebarToggle.addEventListener('click', () => {
+    setSidebarCollapsed(!appShell.classList.contains('sidebar-collapsed'), true);
+  });
+
+  // ============================================================
   // 面包屑导航
   // ============================================================
   function updateBreadcrumb(level, provinceName) {
@@ -115,9 +154,19 @@
   let toolsPageOpen = false;
   let poSearchPageOpen = false;
   let crawlerPageOpen = false;
+  let mailPageOpen = false;
+  let meterPageOpen = false;
   const toolsPage = $('tools-page');
   const poSearchPage = $('po-search-page');
   const crawlerPage = $('crawler-page');
+  const mailPage = $('mail-page');
+  const meterPage = $('meter-page');
+  const mailPageTitle = $('mail-page-title');
+  const mailPlaceholderTitle = $('mail-placeholder-title');
+  const mailPlaceholderCard = $('mail-placeholder-card');
+  const mailTrackCard = $('mail-track-card');
+  const mailListCard = $('mail-list-card');
+  const mailReturnCard = $('mail-return-card');
   const recordsPage = $('records-page');
   const recordsTbody = $('records-tbody');
   const recordsCount = $('records-count');
@@ -145,6 +194,12 @@
 
   function showRecordsPage() {
     recordsPageOpen = true;
+    // 收起其它页面（侧边栏随时可点，这里必须保证同一时刻只有一个页面）
+    if (toolsPageOpen) hideToolsPage();
+    if (poSearchPageOpen) hidePOSearchPage();
+    if (crawlerPageOpen) hideCrawlerPage();
+    if (mailPageOpen) hideMailPage();
+    if (meterPageOpen) hideMeterPage();
     // 隐藏主视图，显示记录页
     $('main-container').style.display = 'none';
     $('btn-add-record-fab').style.display = 'none';
@@ -161,6 +216,7 @@
     // 填充区县筛选下拉
     populateRecordsDistrict();
     renderRecordsTable(recordsSearch.value);
+    setActiveNav('records');
   }
 
   function populateRecordsCity() {
@@ -207,6 +263,7 @@
     recordsDistrict.innerHTML = '<option value="">全部区县</option>';
     recordsDistrict.disabled = true;
     recordsSearch.value = '';
+    setActiveNav('overview');
   }
 
   function getSelectedIds() {
@@ -473,14 +530,18 @@
   // ============================================================
   function showToolsPage() {
     toolsPageOpen = true;
-    $('main-container').style.display = 'none';
-    $('btn-add-record-fab').style.display = 'none';
+    // 先把其它页面收起来（hide* 会把主视图恢复成可见），再隐藏主视图
     if (recordsPageOpen) hideRecordsPage();
     if (poSearchPageOpen) hidePOSearchPage();
     if (crawlerPageOpen) hideCrawlerPage();
+    if (mailPageOpen) hideMailPage();
+    if (meterPageOpen) hideMeterPage();
+    $('main-container').style.display = 'none';
+    $('btn-add-record-fab').style.display = 'none';
     toolsPage.style.display = 'flex';
     // 网点数据在启动后才从 base 目录导入，进入页面时重建「随机网点」的筛选下拉
     if (typeof Tools !== 'undefined') Tools.refreshRandomPO();
+    setActiveNav('tools');
   }
 
   function hideToolsPage() {
@@ -488,6 +549,7 @@
     toolsPage.style.display = 'none';
     $('main-container').style.display = '';
     $('btn-add-record-fab').style.display = '';
+    setActiveNav('overview');
   }
 
   $('btn-show-tools').addEventListener('click', showToolsPage);
@@ -498,14 +560,17 @@
   // ============================================================
   function showPOSearchPage() {
     poSearchPageOpen = true;
-    $('main-container').style.display = 'none';
-    $('btn-add-record-fab').style.display = 'none';
     if (recordsPageOpen) hideRecordsPage();
     if (toolsPageOpen) hideToolsPage();
     if (crawlerPageOpen) hideCrawlerPage();
+    if (mailPageOpen) hideMailPage();
+    if (meterPageOpen) hideMeterPage();
+    $('main-container').style.display = 'none';
+    $('btn-add-record-fab').style.display = 'none';
     poSearchPage.style.display = 'flex';
     // 网点数据在启动后才从 base 目录导入，进入页面时重新拉取筛选条件与结果
     if (typeof Tools !== 'undefined') Tools.refreshPOSearch();
+    setActiveNav('po-search');
   }
 
   function hidePOSearchPage() {
@@ -513,6 +578,7 @@
     poSearchPage.style.display = 'none';
     $('main-container').style.display = '';
     $('btn-add-record-fab').style.display = '';
+    setActiveNav('overview');
   }
 
   $('btn-show-po-search').addEventListener('click', showPOSearchPage);
@@ -523,13 +589,16 @@
   // ============================================================
   function showCrawlerPage() {
     crawlerPageOpen = true;
-    $('main-container').style.display = 'none';
-    $('btn-add-record-fab').style.display = 'none';
     if (recordsPageOpen) hideRecordsPage();
     if (toolsPageOpen) hideToolsPage();
     if (poSearchPageOpen) hidePOSearchPage();
+    if (mailPageOpen) hideMailPage();
+    if (meterPageOpen) hideMeterPage();
+    $('main-container').style.display = 'none';
+    $('btn-add-record-fab').style.display = 'none';
     crawlerPage.style.display = 'flex';
     if (typeof CrawlerPage !== 'undefined') CrawlerPage.refresh();
+    setActiveNav('crawler');
   }
 
   function hideCrawlerPage() {
@@ -539,10 +608,134 @@
     $('btn-add-record-fab').style.display = '';
     // 只停 UI 轮询，后台作业继续跑；再次进入页面会重新拉取状态
     if (typeof CrawlerPage !== 'undefined') CrawlerPage.suspend();
+    setActiveNav('overview');
   }
 
   $('btn-show-crawler').addEventListener('click', showCrawlerPage);
   $('btn-crawler-back').addEventListener('click', hideCrawlerPage);
+
+  // ============================================================
+  // 邮资机戳页面（独立数据表，与日戳记录互不影响）
+  // ============================================================
+  function showMeterPage() {
+    meterPageOpen = true;
+    if (recordsPageOpen) hideRecordsPage();
+    if (toolsPageOpen) hideToolsPage();
+    if (poSearchPageOpen) hidePOSearchPage();
+    if (crawlerPageOpen) hideCrawlerPage();
+    if (mailPageOpen) hideMailPage();
+    $('main-container').style.display = 'none';
+    $('btn-add-record-fab').style.display = 'none';
+    meterPage.style.display = 'flex';
+    if (typeof MeterList !== 'undefined') MeterList.show();
+    setActiveNav('meter');
+  }
+
+  function hideMeterPage() {
+    meterPageOpen = false;
+    meterPage.style.display = 'none';
+    $('main-container').style.display = '';
+    $('btn-add-record-fab').style.display = '';
+    if (typeof MeterList !== 'undefined') MeterList.closeForm();
+    setActiveNav('overview');
+  }
+
+  $('btn-show-meter').addEventListener('click', showMeterPage);
+  $('btn-meter-back').addEventListener('click', hideMeterPage);
+
+  // ============================================================
+  // 地图总览页面（侧边栏第一项）
+  // ============================================================
+  function showOverviewPage() {
+    if (recordsPageOpen) hideRecordsPage();
+    if (toolsPageOpen) hideToolsPage();
+    if (poSearchPageOpen) hidePOSearchPage();
+    if (crawlerPageOpen) hideCrawlerPage();
+    if (mailPageOpen) hideMailPage();
+    if (meterPageOpen) hideMeterPage();
+    // 收起动作会把主视图恢复回来，这里再统一亮一次总览
+    $('main-container').style.display = '';
+    $('btn-add-record-fab').style.display = '';
+    setActiveNav('overview');
+  }
+
+  $('btn-show-overview').addEventListener('click', showOverviewPage);
+
+  // ============================================================
+  // 邮件管理页面
+  //   mail-pending / mail-transit / mail-delivered → 共用一张表的三个状态视图
+  //   mail-query                                   → Ship24 单号查询
+  //   mail-return                                  → 国际退信（独立一张表）
+  // ============================================================
+  const MAIL_ROUTES = {
+    'mail-pending':   { kind: 'list', status: 'pending' },
+    'mail-transit':   { kind: 'list', status: 'transit' },
+    'mail-delivered': { kind: 'list', status: 'delivered' },
+    'mail-query':     { kind: 'track' },
+    'mail-return':    { kind: 'return' },
+  };
+
+  /** 页面标题里的模块名直接取侧边栏文字，避免两处各维护一份 */
+  function mailLabel(pageKey) {
+    const el = document.querySelector(`#sidebar [data-page="${pageKey}"]`);
+    if (el && el.dataset.label) return el.dataset.label;
+    return el ? el.textContent.trim() : pageKey;
+  }
+
+  function showMailPage(pageKey) {
+    const route = MAIL_ROUTES[pageKey];
+    if (!route) return;
+    mailPageOpen = true;
+    if (recordsPageOpen) hideRecordsPage();
+    if (toolsPageOpen) hideToolsPage();
+    if (poSearchPageOpen) hidePOSearchPage();
+    if (crawlerPageOpen) hideCrawlerPage();
+    if (meterPageOpen) hideMeterPage();
+    $('main-container').style.display = 'none';
+    $('btn-add-record-fab').style.display = 'none';
+
+    const label = mailLabel(pageKey);
+    mailPageTitle.textContent = `[ 邮件管理 · ${label} ]`;
+    mailPage.style.display = 'flex';
+
+    // 卡片互斥：国际退信 / 列表 / Ship24 查询 / 占位
+    mailListCard.style.display = 'none';
+    mailReturnCard.style.display = 'none';
+    mailTrackCard.style.display = 'none';
+    mailPlaceholderCard.style.display = 'none';
+
+    if (route.kind === 'list') {
+      mailListCard.style.display = '';
+      if (typeof MailList !== 'undefined') MailList.show(route.status);
+    } else if (route.kind === 'return') {
+      mailReturnCard.style.display = '';
+      if (typeof ReturnList !== 'undefined') ReturnList.show();
+    } else if (route.kind === 'track') {
+      // 查询组件是 index.html 里的自定义元素 <ship24-tracking-widget>，脚本在 head 中加载
+      mailTrackCard.style.display = '';
+    } else {
+      mailPlaceholderCard.style.display = '';
+      mailPlaceholderTitle.textContent = `${label} 功能暂未开发`;
+    }
+    setActiveNav(pageKey);
+  }
+
+  function hideMailPage() {
+    mailPageOpen = false;
+    mailPage.style.display = 'none';
+    $('main-container').style.display = '';
+    $('btn-add-record-fab').style.display = '';
+    setActiveNav('overview');
+  }
+
+  navItems.forEach(el => {
+    const key = el.dataset.page;
+    if (key && key.startsWith('mail-')) {
+      el.addEventListener('click', () => showMailPage(key));
+    }
+  });
+  $('btn-mail-back').addEventListener('click', hideMailPage);
+
   $('btn-refresh').addEventListener('click', () => {
     refreshAllViews();
     if (recordsPageOpen) renderRecordsTable(recordsSearch.value);
@@ -604,10 +797,19 @@
     if (e.key === 'Escape') {
       // 报告弹窗叠在页面之上，Esc 应先收起它，而不是把整个「数据抓取」页也关掉
       if (window.CrawlerPage && window.CrawlerPage.closeReport()) return;
+      // 邮件「新增 / 编辑」表单同理
+      if (window.MailList && window.MailList.closeForm()) return;
+      // 国际退信：详情弹窗叠在列表之上，先收它，再收「新增 / 编辑」表单
+      if (window.ReturnList && window.ReturnList.closeDetail()) return;
+      if (window.ReturnList && window.ReturnList.closeForm()) return;
+      // 邮资机戳同理
+      if (window.MeterList && window.MeterList.closeForm()) return;
       if (batchModalOpen) closeBatchModal();
       else if (toolsPageOpen) hideToolsPage();
       else if (poSearchPageOpen) hidePOSearchPage();
       else if (crawlerPageOpen) hideCrawlerPage();
+      else if (mailPageOpen) hideMailPage();
+      else if (meterPageOpen) hideMeterPage();
       else if (recordsPageOpen) hideRecordsPage();
     }
   });
@@ -802,6 +1004,22 @@
   // ============================================================
   const BASE_SIG_KEY = 'poref_base_signature';
 
+  /**
+   * 拉取 base/base_old.csv（历史归档，单一文件、POST/SPB 混排）。
+   * 没有这个文件返回 null —— 调用方据此把参考库的历史部分清空，
+   * 保证归档视图与 base 目录始终一致。
+   */
+  async function fetchBaseOldBuffer() {
+    try {
+      const r = await fetch('/base/' + encodeURIComponent('base_old.csv'));
+      if (!r.ok) return null;
+      return await r.arrayBuffer();
+    } catch (e) {
+      console.error('[PO] 拉取 base_old.csv 失败:', e);
+      return null;
+    }
+  }
+
   async function importBaseData() {
     // 1. 获取 base 目录文件列表
     let files;
@@ -813,21 +1031,37 @@
       return { error: '无法读取 base 目录: ' + e.message };
     }
 
+    // 只认网点数据文件（post*/spb*）；base_old.csv 单独处理，不算网点数据
+    const dataFiles = (Array.isArray(files) ? files : []).filter((f) => {
+      const lower = String(f.name || '').toLowerCase();
+      return lower.startsWith('post') || lower.startsWith('spb');
+    });
+
     // base 目录确认为空 → 参考库同步清空，保持与 base 完全一致
-    if (!Array.isArray(files) || files.length === 0) {
+    if (dataFiles.length === 0) {
       const prev = PODatabase.count();
-      if (prev > 0) {
-        PODatabase.clear();
-        localStorage.removeItem(BASE_SIG_KEY);
-      }
-      return { empty: true, cleared: prev, total: PODatabase.count() };
+      await PODatabase.clear();
+      await PODatabase.importHistory(await fetchBaseOldBuffer());
+      localStorage.removeItem(BASE_SIG_KEY);
+      return {
+        empty: true, cleared: prev,
+        total: PODatabase.count(), historyTotal: PODatabase.historyCount(),
+      };
     }
+    files = dataFiles;
 
     // 2. 签名校验：文件未变化且已有数据则跳过，避免重复导入
+    //    刚从旧版 localStorage 方案升级上来时 IndexedDB 是空的，此时不能信任
+    //    旧签名（它可能只对应搬过来的那几个省），必须强制重新导入一次。
+    //    上一次是「对比快照」时同样要重建：快照只是提交前的样子，base 才是准的。
     const sig = files.map(f => `${f.name}:${f.size}:${f.mtime}`).join('|');
     const prevSig = localStorage.getItem(BASE_SIG_KEY);
-    if (prevSig === sig && PODatabase.count() > 0) {
-      return { skipped: true, files: files.length, total: PODatabase.count() };
+    if (prevSig === sig && PODatabase.count() > 0 &&
+        !PODatabase.legacyUpgrade() && !PODatabase.isProvisional()) {
+      return {
+        skipped: true, files: files.length,
+        total: PODatabase.count(), historyTotal: PODatabase.historyCount(),
+      };
     }
 
     // 3. 拉取并解析每个 CSV
@@ -854,13 +1088,22 @@
     // 4. 批量导入 — replace 模式：参考库完全跟随 base 目录，
     //    上一版本的数据 (含已被删除的省份/网点) 不再保留
     try {
-      const result = PODatabase.importCSVBulk(buffers, undefined, { mode: 'replace' });
+      const result = await PODatabase.importCSVBulk(buffers, undefined, { mode: 'replace' });
+      // 历史归档单独一份：base_old.csv 存在就导入，不存在就清空历史。
+      // 归档失败不该把「当前库已经导入成功」报成整体失败，所以单独兜一层。
+      let historyTotal = PODatabase.historyCount();
+      try {
+        historyTotal = await PODatabase.importHistory(await fetchBaseOldBuffer());
+      } catch (e) {
+        console.error('[PO] 导入历史归档失败（当前库不受影响）:', e);
+      }
       localStorage.setItem(BASE_SIG_KEY, sig);
       return {
         imported: result.imported,
         files: buffers.length,
         total: result.stats.totalCount,
         errors: result.errors.length,
+        historyTotal,
       };
     } catch (e) {
       return { error: e.message };
@@ -871,8 +1114,15 @@
   // 启动
   // ============================================================
   try {
+    // 先水合 PO 参考库（IndexedDB → 内存镜像），之后所有查询 API 都是同步的
+    await PODatabase.ready();
+
     // 初始化表单
     EntryForm.init();
+
+    // 「邮资机戳」独立表：首次启动把已有日戳记录里的邮资机信息移植过来，只做一次；
+    // 之后（含用户再改日戳记录）都以本页数据为准，需要补拉时页面上有「从日戳记录移植」
+    if (typeof MeterStore !== 'undefined') MeterStore.autoSeed();
 
     // 初始化统计面板
     StatsView.init();
@@ -895,8 +1145,10 @@
   importBaseData().then(async (result) => {
     const stats = PODatabase.getStats();
     const postCount = stats.provinces.reduce((s, p) => s + p.postCount, 0);
-    const spbCount  = stats.provinces.reduce((s, p) => s + p.spbCount, 0);
+    const spbCount = stats.provinces.reduce((s, p) => s + p.spbCount, 0);
     const total = stats.totalCount;
+    const hist = PODatabase.historyCount();
+    const histNote = hist ? `\n历史归档 ${hist} 条（可在「网点检索」里勾选查看）。` : '';
 
     let msg;
     if (result.error) {
@@ -905,10 +1157,12 @@
       msg = result.cleared > 0
         ? `base 目录下已无网点数据文件，参考库已同步清空（原有 ${result.cleared} 条）。`
         : 'base 目录下没有网点数据文件，无法自动导入。';
+      if (hist) msg += `\n历史归档 ${hist} 条已保留。`;
     } else if (result.skipped) {
-      msg = `网点数据已是最新，当前共 ${total} 条（POST ${postCount} / SPB ${spbCount}）。`;
+      msg = `网点数据已是最新，当前共 ${total} 条（POST ${postCount} / SPB ${spbCount}）。` + histNote;
     } else {
-      msg = `已从 base 目录覆盖导入网点数据：本次 ${result.imported} 条，当前共 ${total} 条（POST ${postCount} / SPB ${spbCount}）。`;
+      msg = `已从 base 目录覆盖导入网点数据：本次 ${result.imported} 条，当前共 ${total} 条（POST ${postCount} / SPB ${spbCount}）。` +
+        histNote;
       if (result.errors > 0) msg += `\n（另有 ${result.errors} 条解析错误）`;
     }
     await Dialog.alert(msg);

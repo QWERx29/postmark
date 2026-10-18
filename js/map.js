@@ -1,7 +1,7 @@
 /**
  * 地图模块 — 基于 ECharts 的中国地图着色与下钻
  * ============================================
- * 依赖: ECharts (全局 echarts), PostmarkData (data.js)
+ * 依赖: ECharts (全局 echarts), PostmarkData (data.js), IdbKV (idb.js)
  *
  * 职责:
  *   1. 加载 GeoJSON (DataV API) 并注册到 ECharts
@@ -119,18 +119,20 @@ const MapView = (function () {
   }
 
   // ============================================================
-  // GeoJSON 加载（带超时 + localStorage 缓存）
+  // GeoJSON 加载（带超时 + IndexedDB 缓存）
   // ============================================================
+  /**
+   * 缓存落在 IndexedDB（IdbKV）而不是 localStorage：
+   * 24 个省份的 GeoJSON 合计约 337 万字符，独占 localStorage
+   * 5 MiB 配额的 64%，会把 PO 参考库挤到无地可写（详见 idb.js 说明）。
+   */
   async function loadGeoJson(adcode) {
-    // 优先从 localStorage 缓存加载
+    // 优先从 IndexedDB 缓存加载
     const CACHE_KEY = `geojson_cache_${adcode}`;
     try {
-      const cached = localStorage.getItem(CACHE_KEY);
-      if (cached) {
-        const geo = JSON.parse(cached);
-        if (geo.features && geo.features.length > 0) return geo;
-      }
-    } catch { /* 缓存损坏则忽略 */ }
+      const cached = await IdbKV.get(CACHE_KEY);
+      if (cached && cached.features && cached.features.length > 0) return cached;
+    } catch { /* 缓存不可用则忽略，走网络 */ }
 
     const url = `${GEO_API_ROOT}/${adcode}_full.json`;
     const controller = new AbortController();
@@ -144,11 +146,30 @@ const MapView = (function () {
         throw new Error('GeoJSON 数据为空');
       }
       // 写入缓存
-      try { localStorage.setItem(CACHE_KEY, JSON.stringify(geo)); } catch { /* 存储满忽略 */ }
+      try { await IdbKV.set(CACHE_KEY, geo); } catch { /* 缓存写不进去不影响本次渲染 */ }
       return geo;
     } finally {
       clearTimeout(timeoutId);
     }
+  }
+
+  /**
+   * 清掉旧版本留在 localStorage 里的 GeoJSON 缓存。
+   * 这些副本已经不在读取路径上，却继续占着 5 MiB 配额。
+   * @returns {number} 清除的键数
+   */
+  function purgeLegacyCache() {
+    if (typeof localStorage === 'undefined') return 0;
+    const doomed = [];
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('geojson_cache_')) doomed.push(k);
+      }
+      for (const k of doomed) localStorage.removeItem(k);
+    } catch { /* 忽略 */ }
+    if (doomed.length > 0) console.log(`[Map] 已清理 localStorage 里的 ${doomed.length} 个旧 GeoJSON 缓存`);
+    return doomed.length;
   }
 
   // ============================================================
@@ -245,6 +266,9 @@ const MapView = (function () {
     async init() {
       const dom = document.getElementById(CHART_DOM);
       if (!dom) throw new Error('找不到地图容器 #' + CHART_DOM);
+
+      // 旧版本把 GeoJSON 缓存在 localStorage，先清掉腾出配额
+      purgeLegacyCache();
 
       chart = echarts.init(dom, null, { renderer: 'canvas' });
       bindEvents();

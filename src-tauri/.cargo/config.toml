@@ -1,0 +1,24 @@
+# Cargo 配置 — 仅本项目生效（随项目走，不污染全局 ~/.cargo）
+#
+# ⚠️ 这个 [source] 替换是**为当前这台机器的受限会话准备的绕行方案**。
+#
+# 问题：本机 schannel 在受限会话下拿不到凭证句柄
+#   schannel: AcquireCredentialsHandle failed: SEC_E_NO_CREDENTIALS (0x8009030e)
+# 导致 curl / PowerShell / cargo 的 HTTPS 全部失败；而 Node（内置 OpenSSL 根证书）
+# 和 git（mingw 的 ca-bundle.crt）都能正常联网 —— 已逐项实测确认。
+# cargo 只肯用 HTTPS，且对 HTTPS 发 CONNECT；CONNECT 隧道里 TLS 仍由 cargo 自己
+# 完成，所以普通代理救不了它。唯一可行的是把数据源换成**明文 HTTP 的本地 registry**，
+# 由 scripts/dev-local-registry.js（Node 做 TLS）代理到官方源。
+#
+# 在**正常网络环境**（schannel 可用）下，请删掉下面整段 [source] 替换，
+# 恢复用官方 crates.io，并把那个 registry 进程关掉。
+#
+# 完整性没有降低：cargo 仍按 Cargo.lock 里的官方 sha256 校验每个 .crate。
+
+[source.crates-io]
+replace-with = "local-dev"
+
+[source.local-dev]
+# 必须带 `sparse+` 前缀：没有它 cargo 会把该 URL 当作 **git** registry 去克隆，
+# 于是又用上 libgit2 的 TLS（本机同样失败），表现为对 `/index/` 的 502。
+registry = "sparse+http://127.0.0.1:19780/index/"

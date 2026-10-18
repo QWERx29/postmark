@@ -7,8 +7,10 @@
  *   ③ 横向对比    POST /api/crawl/start {kind:'cross', ...}
  * 状态与日志通过 GET /api/crawl/status?job=&cursor= 轮询增量拉取。
  *
- * 抓取完成后可一键把 output/*.csv 并入应用内参考库（PODatabase），
- * 无需重启即可在「网点检索」与录入表单中用到新数据。
+ * 参考库（PODatabase）**只在「对比」环节刷新**：抓取结束只是把数据写进 output，
+ * 不动参考库。对比作业会顺带产出一份「应用后的 base 快照」（output/_refstage/，
+ * 当前库已剔除带（撤销）标记的记录）加 base_old.csv 归档，这里把它们拉回来整份替换
+ * 参考库 —— 于是「当前网点 + 历史归档」在确认更新 base 之前就能检索到。
  */
 
 (function () {
@@ -396,7 +398,23 @@
     });
   }
 
-  /** 抓取完成后询问是否刷新应用内参考库 */
+  /**
+   * 抓取产生了新数据：上一次的对比结果与「确认更新 base」都不再对应当前 output，
+   * 参考库也不会再跟着变，所以先把这两个入口关掉，逼用户重新对比一次。
+   */
+  function invalidateCompareState() {
+    const applyBtn = $('btn-compare-apply');
+    const viewBtn = $('btn-compare-view-report');
+    if (applyBtn) applyBtn.disabled = true;
+    if (viewBtn) viewBtn.disabled = true;
+  }
+
+  /**
+   * 抓取完成的收尾。
+   *
+   * 参考库**不在这里刷新** —— 抓取只是把数据写进 output/。参考库要等
+   * 「对比并更新 base」跑完对比，按更新方案（当前库 + base_old 归档）一并刷新。
+   */
   async function afterCrawl(result) {
     if (!result || (!result.totalPost && !result.totalSpb)) {
       await Dialog.alert(
@@ -406,56 +424,77 @@
       return;
     }
 
-    const ok = await Dialog.confirm(
-      `抓取完成：邮政官网 ${result.totalPost} 条 / 邮管局 ${result.totalSpb} 条。\n\n` +
-      `是否立即刷新应用内网点参考库？\n` +
-      `（把 output 目录下的新数据合并进参考库，无需重启即可在「网点检索」中查到）`
-    );
-    if (!ok) return;
+    invalidateCompareState();
+    appendLog($('crawl-log'), [
+      '',
+      `[提示] 数据已写入 output 目录（邮政 ${result.totalPost} 条 / 邮管 ${result.totalSpb} 条）。`,
+      '[提示] 参考库不在这里刷新：请到「对比并更新 base」执行对比，比对时同步刷新。',
+    ]);
 
-    await refreshReference();
+    await Dialog.alert(
+      `抓取完成：邮政官网 ${result.totalPost} 条 / 邮管局 ${result.totalSpb} 条。\n\n` +
+      `数据已写入 output 目录，应用内参考库暂未更新。\n\n` +
+      `请到「对比并更新 base」执行对比 —— 参考库会在对比完成时按更新方案刷新：\n` +
+      `  · 当前库替换为本次 output 的数据（带（撤销）标记的不进当前库）\n` +
+      `  · 名称变化前的旧名称 / 撤销 / 疑似撤下的记录转入 base_old 归档\n` +
+      `  · 营业状态变化（暂停、装修中…）只覆盖原有内容`
+    );
   }
 
   /**
-   * 把 output/*.csv 拉回渲染进程并合并进参考库。
-   * merge 模式：按「来源|名称|区县」去重后追加，不影响已从 base 导入的数据。
+   * 对比完成后刷新应用内参考库（爬取结束时不再做这一步）。
+   *
+   * 数据是主进程在对比时算好的：output/_refstage/ 下是「应用后的 base 快照」
+   * （当前库，已剔除带（撤销）标记的记录）+ base_old.csv（历史归档）。
+   * 这里把它们拉回渲染进程，整份替换 PODatabase。
+   *
+   * 失败只记日志、不弹窗：报告弹窗已经打开，不该再压一个模态上去。
+   *
+   * @param {object|null} refLibrary 作业结果里的 refLibrary
+   * @returns {Promise<{current:number, history:number, imported:number}|null>}
    */
-  async function refreshReference() {
-    const statusEl = $('crawl-status');
-    const logEl = $('crawl-log');
+  async function refreshReference(refLibrary) {
+    const statusEl = $('compare-status');
+    const logEl = $('compare-log');
+
+    // 没有快照就静默跳过：主进程已在作业日志里说明了原因（生成快照失败等），
+    // 这里再补一行只会把「最新一行」的提示挤掉。
+    if (!refLibrary || !Array.isArray(refLibrary.files) || refLibrary.files.length === 0) {
+      return null;
+    }
+
     setStatus(statusEl, '正在刷新参考库…', '#00991A');
-
     try {
-      const res = await fetch('/api/output-files');
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const files = await res.json();
-      if (!Array.isArray(files) || files.length === 0) {
-        setStatus(statusEl, 'output 目录没有 CSV 文件', '#fa8c16');
-        return;
-      }
-
       const buffers = [];
-      for (const f of files) {
-        const lower = f.name.toLowerCase();
-        let sourceType = null;
-        if (lower.startsWith('post')) sourceType = 'post';
-        else if (lower.startsWith('spb')) sourceType = 'spb';
-        if (!sourceType) continue;
+      for (const f of refLibrary.files) {
         try {
-          const r = await fetch('/output/' + encodeURIComponent(f.name));
+          const r = await fetch('/output/_refstage/' + encodeURIComponent(f.name));
           if (!r.ok) continue;
-          buffers.push({ buffer: await r.arrayBuffer(), sourceType, name: f.name });
+          buffers.push({ buffer: await r.arrayBuffer(), sourceType: f.sourceType, name: f.name });
         } catch (e) {
           appendLog(logEl, [`  [警告] 拉取 ${f.name} 失败: ${e.message}`]);
         }
       }
-
       if (buffers.length === 0) {
-        setStatus(statusEl, '没有可导入的网点 CSV', '#fa8c16');
-        return;
+        setStatus(statusEl, '参考库快照拉取失败', '#d93025');
+        appendLog(logEl, ['[参考库] 快照文件一个都没拉到，跳过刷新']);
+        return null;
       }
 
-      const result = PODatabase.importCSVBulk(buffers, undefined, { mode: 'merge' });
+      // 归档文件（快照目录里的 base_old.csv）；拉不到就按「没有归档」处理
+      let archiveBuffer = null;
+      if (refLibrary.archiveRelPath) {
+        const url = '/output/' + String(refLibrary.archiveRelPath)
+          .split('/').map(encodeURIComponent).join('/');
+        try {
+          const r = await fetch(url);
+          if (r.ok) archiveBuffer = await r.arrayBuffer();
+        } catch (e) {
+          appendLog(logEl, [`  [警告] 拉取归档文件失败: ${e.message}`]);
+        }
+      }
+
+      const result = await PODatabase.refreshFromCompare(buffers, archiveBuffer);
 
       // 参考库变了，刷新依赖它的 UI
       if (typeof Tools !== 'undefined') {
@@ -466,28 +505,23 @@
       const stats = PODatabase.getStats();
       const postCount = stats.provinces.reduce((s, p) => s + p.postCount, 0);
       const spbCount = stats.provinces.reduce((s, p) => s + p.spbCount, 0);
+      const history = PODatabase.historyCount();
 
-      setStatus(statusEl, `参考库已刷新（新增 ${result.imported} 条）`, '#00991A');
       appendLog(logEl, [
         '',
-        `[参考库] 导入 ${buffers.length} 个文件，新增 ${result.imported} 条`,
-        `[参考库] 当前共 ${stats.totalCount} 条（邮政 ${postCount} / 邮管 ${spbCount}）`,
+        `[参考库] 已按对比结果刷新：当前 ${stats.totalCount} 条（邮政 ${postCount} / 邮管 ${spbCount}）`,
+        `[参考库] 历史归档 ${history} 条（base_old，检索时可勾选查看）`,
+        `[参考库] 不进当前库的已撤销记录 ${refLibrary.revokedTotal || 0} 条`,
         result.errors.length ? `[参考库] 跳过 ${result.errors.length} 行（数据不完整或省份无法识别）` : '',
       ].filter(Boolean));
 
-      await Dialog.alert(
-        `参考库已刷新。\n\n` +
-        `导入文件：${buffers.length} 个\n` +
-        `新增网点：${result.imported} 条\n` +
-        `当前总计：${stats.totalCount} 条（邮政 ${postCount} / 邮管 ${spbCount}）\n\n` +
-        `现在可以在「网点检索」中查到新网点。\n` +
-        `注意：这些数据尚未写入 base 目录，重启后会从 base 重新加载——` +
-        `如需永久保留，请使用「对比并更新 base」。`
-      );
+      setStatus(statusEl,
+        `参考库已刷新（当前 ${stats.totalCount} 条 / 历史 ${history} 条）`, '#00991A');
+      return { current: stats.totalCount, history, imported: result.imported };
     } catch (e) {
       setStatus(statusEl, '刷新参考库失败: ' + e.message, '#d93025');
       appendLog(logEl, ['[错误] 刷新参考库失败: ' + e.message]);
-      await Dialog.alert('刷新参考库失败：' + e.message);
+      return null;
     }
   }
 
@@ -535,13 +569,22 @@
 
           summaryEl.style.display = 'flex';
           summaryText.textContent =
-            `对比 ${st.result.compared} 对 | 新增 ${st.result.added} | 缺失 ${st.result.missing}`;
+            `对比 ${st.result.compared} 对 | 新增 ${st.result.added} | 缺失 ${st.result.missing}` +
+            archiveSummaryText(st.result);
 
           // 对比结果改为弹窗展示；能更新 base 时，弹窗底部给出「确认更新 base」
           lastCompareResult = st.result;
           applyBtn.disabled = !st.result.canApply;
           viewReportBtn.disabled = false;
           openReportModal(buildCompareSpec(st.result, st.result.canApply ? doApply : null));
+
+          // 参考库在「对比」这一步刷新（爬取结束后不再刷新）。
+          // 弹窗先弹出来，刷新在后台继续，完成后把结果补到汇总行上。
+          const lib = await refreshReference(st.result.refLibrary);
+          if (lib) {
+            summaryText.textContent +=
+              ` | 参考库：当前 ${lib.current} 条 / 历史 ${lib.history} 条`;
+          }
         },
       });
     });
@@ -551,7 +594,11 @@
         await Dialog.alert('已有作业正在运行，请先等待其结束或取消。');
         return;
       }
-      if (!(await Dialog.confirm('确定把 output 的内容更新到 base 目录？此操作不可撤销。'))) return;
+      if (!(await Dialog.confirm(
+        '确定把 output 的内容更新到 base 目录？此操作不可撤销。\n\n' +
+        '规则：当前库按 output 覆盖；涉及名称变化 / 撤销 / 疑似撤下的记录' +
+        '转入 base/base_old.csv 归档；营业状态变化只覆盖原有内容。'
+      ))) return;
       await doApply();
     });
 
@@ -566,15 +613,29 @@
           startBtn.disabled = false;
           if (!st || st.state !== 'done') return;
           applyBtn.disabled = true;
-          summaryText.textContent = `base 已更新 ${st.result.updated} 个文件`;
+          summaryText.textContent = `base 已更新 ${st.result.updated} 个文件` +
+            (st.result.archived ? ` | base_old 归档 ${st.result.archived} 条` : '');
           await Dialog.alert(
             `base 目录已更新：${st.result.updated} 个文件。\n\n` +
             (st.result.deleted.length ? `删除旧文件：${st.result.deleted.join('、')}\n\n` : '') +
-            `下次启动应用时会自动加载新的参考库。`
+            (st.result.archived
+              ? `base_old 归档：${st.result.archived} 条` +
+                `（本次新增 ${st.result.archiveAdded}` +
+                (st.result.archiveRestored ? ` / 移出 ${st.result.archiveRestored}` : '') + '）\n' +
+                `归档文件：${st.result.archivePath}\n\n`
+              : '') +
+            `参考库已在对比时刷新过；下次启动应用时会从 base 重新加载。`
           );
         },
       });
     }
+  }
+
+  /** 对比结果里的归档摘要（没有归档时返回空串） */
+  function archiveSummaryText(result) {
+    const p = result && result.plan;
+    if (!p || !p.archiveTotal) return '';
+    return ` | 归档 ${p.archiveTotal} 条（本次新增 ${p.archiveAdded}）`;
   }
 
   // ============================================================
@@ -994,6 +1055,69 @@
     el.className = 'rm-heading';
     el.textContent = text;
     return el;
+  }
+
+  /**
+   * 标签页：标签栏 + 内容区。
+   *
+   * 每个标签的内容惰性构建（报告全文可能几十 MB，一开弹窗就全建出来会卡死），
+   * 构建后留在 DOM 里，切换只是显隐 —— 来回切不会丢展开状态、也不会重建表格。
+   *
+   * @param {Array<{key:string, label:string, build:function():HTMLElement}>} tabs
+   * @returns {HTMLElement} 元素上挂 _select(key) / _active()，供程序与测试切换
+   */
+  function makeTabs(tabs) {
+    const wrap = document.createElement('div');
+    wrap.className = 'rm-tabs';
+
+    const bar = document.createElement('div');
+    bar.className = 'rm-tab-bar';
+    const panels = document.createElement('div');
+    panels.className = 'rm-tab-panels';
+
+    const items = tabs.map((t, i) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'rm-tab';
+      btn.textContent = t.label;
+      btn.addEventListener('click', () => select(t.key));
+      bar.appendChild(btn);
+
+      const panel = document.createElement('div');
+      panel.className = 'rm-tab-panel';
+      panels.appendChild(panel);
+
+      return { key: t.key == null ? String(i) : t.key, build: t.build, btn, panel, built: false };
+    });
+
+    let activeKey = null;
+
+    /** 切到某个标签（不存在则退回第一个），返回它的内容面板 */
+    function select(key) {
+      const item = items.filter((x) => x.key === key)[0] || items[0];
+      if (!item) return null;
+
+      if (!item.built) {
+        item.built = true;
+        const box = item.build();
+        if (box) item.panel.appendChild(box);
+      }
+
+      activeKey = item.key;
+      for (const x of items) {
+        const on = x === item;
+        x.panel.style.display = on ? 'block' : 'none';
+        x.btn.classList.toggle('is-active', on);
+      }
+      return item.panel;
+    }
+
+    wrap.appendChild(bar);
+    wrap.appendChild(panels);
+    wrap._select = select;
+    wrap._active = () => activeKey;
+    select(items.length ? items[0].key : null);
+    return wrap;
   }
 
   /**
@@ -1529,6 +1653,7 @@
     const box = document.createElement('div');
     const intel = (result.intelligent || []).find((p) => p.prefix === prefix) || null;
     const pair = (result.pairs || []).find((p) => p.prefix === prefix) || null;
+    const planRow = ((result.plan || {}).byPrefix || []).find((p) => p.prefix === prefix) || null;
 
     const head = document.createElement('div');
     head.className = 'rm-heading';
@@ -1541,6 +1666,17 @@
       f.className = 'rm-footnote';
       f.textContent = files;
       box.appendChild(f);
+    }
+
+    // 这个文件在「确认更新 base」时会怎么变：当前库多少条、归档多少条
+    if (planRow) {
+      const pl = document.createElement('p');
+      pl.className = 'rm-footnote';
+      pl.textContent =
+        `更新方案：当前库 ${planRow.current} 条` +
+        (planRow.revoked ? ` · 已撤销不进库 ${planRow.revoked} 条` : '') +
+        ` · 归档 更名 ${planRow.renamed} / 疑似撤下 ${planRow.removed}`;
+      box.appendChild(pl);
     }
 
     if (intel) {
@@ -1564,38 +1700,107 @@
     return box;
   }
 
-  /** 智能比较报告弹窗。onApply 非空时提供「确认更新 base」按钮 */
-  function buildCompareSpec(result, onApply) {
-    const body = document.createElement('div');
+  /**
+   * 「更新方案」标签页：确认更新 base 之后 base 会变成什么样。
+   * 逐文件的归档明细来自主进程算好的 plan.byPrefix。
+   */
+  function buildComparePlanPanel(result) {
+    const box = document.createElement('div');
+    const plan = result.plan || null;
 
-    // ── 概览：不选省份时只有这些 ──
-    body.appendChild(makeCards([
+    if (!plan) {
+      box.appendChild(makeHeading('更新方案'));
+      const none = document.createElement('p');
+      none.className = 'rm-footnote';
+      none.textContent = '本次对比没有算出更新方案（主进程未返回 plan），无法预览 base 将怎么变。';
+      box.appendChild(none);
+      return box;
+    }
+
+    const cards = [
+      { label: '写入当前库', value: plan.currentTotal, color: '#28a745' },
+    ];
+    if (plan.revokedTotal) {
+      cards.push({ label: '已撤销(不进库)', value: plan.revokedTotal, color: '#d93026' });
+    }
+    cards.push({ label: 'base_old 归档', value: plan.archiveTotal, color: '#6c757d' });
+    cards.push({ label: '本次新归档', value: plan.archiveAdded, color: '#6c757d' });
+    box.appendChild(makeCards(cards));
+
+    const note = document.createElement('p');
+    note.className = 'rm-footnote';
+    note.textContent =
+      '当前库按 output 覆盖 base/{前缀}+base.csv（带（撤销）标记的记录不进当前库）；' +
+      '名称变化前的旧名称、带（撤销）的记录、output 里已消失的旧记录转入 base/base_old.csv 归档；' +
+      '营业状态变化（暂停、装修中、临时停业、假期营业…）只覆盖原有内容，不进归档。' +
+      '归档只保留当前库里已经没有的记录，重新出现的会被移出。';
+    box.appendChild(note);
+
+    // ── 归档构成 ──
+    box.appendChild(makeHeading('base_old 归档构成'));
+    const reasons = Object.keys(plan.archiveByReason || {});
+    if (reasons.length) {
+      box.appendChild(makeTable(
+        ['归档原因', '条数'],
+        reasons.map((k) => [k, plan.archiveByReason[k]]),
+        `归档文件共 ${plan.archiveTotal} 条，其中本次新增 ${plan.archiveAdded} 条` +
+        (plan.archiveRestored ? `、移出 ${plan.archiveRestored} 条` : '') + '。'
+      ));
+    } else {
+      const none = document.createElement('p');
+      none.className = 'rm-footnote';
+      none.textContent = '本次没有需要归档的记录（base_old 保持为空）。';
+      box.appendChild(none);
+    }
+
+    // ── 逐文件方案 ──
+    const byPrefix = plan.byPrefix || [];
+    if (byPrefix.length) {
+      box.appendChild(makeHeading('逐文件方案'));
+      box.appendChild(makeTable(
+        ['文件', '写入当前库', '已撤销', '更名归档', '疑似撤下'],
+        byPrefix.map((r) => [
+          prefixLabel(r.prefix), r.current, r.revoked, r.renamed, r.removed,
+        ]),
+        '「写入当前库」是覆盖 base 后的条数；已撤销的记录不进当前库；' +
+        '更名归档 = 旧名称那条，疑似撤下 = output 里已消失的旧记录。'
+      ));
+    }
+
+    return box;
+  }
+
+  /** 「对比报告」标签页：语义级判别明细 + 逐省逐文件明细 + 报告全文 */
+  function buildCompareReportPanel(result) {
+    const box = document.createElement('div');
+    const intelList = Array.isArray(result.intelligent) ? result.intelligent : [];
+
+    box.appendChild(makeCards([
       { label: '对比文件对', value: result.compared, color: '#28a745' },
       { label: '新增', value: result.added, color: '#0d6efd' },
       { label: '缺失', value: result.missing, color: '#fa8c16' },
     ]));
 
-    const intelList = Array.isArray(result.intelligent) ? result.intelligent : [];
     if (intelList.length) {
       const intro = document.createElement('p');
       intro.className = 'rm-footnote';
       intro.textContent =
         '语义级判别：把两份数据按「区县+归一化名称 → 公共中文字串 → 邮编」三级规则配成对，' +
         '再逐字段比出变化类型，并识别疑似新增/撤下与连续变化区块。与落盘的智能判别报告同源。';
-      body.appendChild(intro);
-      body.appendChild(buildIntelligentCards(intelList));
+      box.appendChild(intro);
+      box.appendChild(buildIntelligentCards(intelList));
     }
 
     // ── 选省看详情 ──
     const options = compareProvinceOptions(result);
     if (options.length) {
-      body.appendChild(makeSelector('选择省份：', options,
+      box.appendChild(makeSelector('选择省份：', options,
         (abbr) => buildCompareProvinceDetail(abbr, result)));
     }
 
     // ── 报告全文 ──
     if (intelList.length) {
-      body.appendChild(makeSection({
+      box.appendChild(makeSection({
         badge: '报告',
         badgeClass: 'rm-badge-prov',
         title: '智能判别报告全文',
@@ -1606,7 +1811,7 @@
       }));
     }
 
-    body.appendChild(makeSection({
+    box.appendChild(makeSection({
       badge: '报告',
       badgeClass: 'rm-badge-prov',
       title: '完整报告文本',
@@ -1614,6 +1819,21 @@
       open: false,
       build: () => makePre(result.reportText || '（报告为空）', { path: result.reportPath }),
     }));
+
+    return box;
+  }
+
+  /**
+   * 智能比较报告弹窗。onApply 非空时提供「确认更新 base」按钮。
+   *
+   * 正文分两个标签页：「更新方案」= 确认后 base 会怎么变；「对比报告」= 本次差异明细。
+   * 两边内容都很大，所以标签内容惰性构建（见 makeTabs）。
+   */
+  function buildCompareSpec(result, onApply) {
+    const body = makeTabs([
+      { key: 'plan', label: '更新方案', build: () => buildComparePlanPanel(result) },
+      { key: 'report', label: '对比报告', build: () => buildCompareReportPanel(result) },
+    ]);
 
     const buttons = [];
     if (onApply && result.canApply) {

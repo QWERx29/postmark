@@ -13,6 +13,10 @@
  *   - parsePostPage 的「市」字段：弃用地址回溯，改为「抓取的区县名 + 地名表反查」
  *     （见 crawler-cities.js），更稳定。
  *   - 对比后「是否更新 base」的 input() 交互改为由 UI 二次确认后单独调用 applyBase()。
+ *   - base 覆盖式更新时，涉及名称变化 / 撤销 / 疑似撤下的记录不再被直接丢掉，而是
+ *     转进同目录的 base_old.csv 归档（单一文件、不分省，只存当前已没有的记录）；
+ *     营业状态变化只覆盖原有内容，不进归档。见 computeBaseUpdate。
+ *   - 参考库刷新挪到「对比」阶段：爬取结束只产出 output，不动应用内参考库。
  *   - 不依赖 Python，无需 requests / bs4；SPB 页面用正则解析（页面结构固定）。
  */
 
@@ -1003,6 +1007,127 @@ function startCrawl(opts = {}) {
 
 // ===================== 功能②：对比并更新 base =====================
 
+/**
+ * base_old 归档文件名（与 base 同目录）。
+ *
+ * 与 base/{前缀}+base.csv 不同，归档是**一个**文件、不分省，只保存
+ * 「当前库里已经没有、但历史上存在过」的记录：
+ *   - 名称变化 —— 更名前的旧名称那一条（新名称照常进 base）
+ *   - 撤销     —— 名称带「（撤销）」标记的那一条（不进 base）
+ *   - 疑似撤下 —— output 里已经不存在的旧记录
+ * 营业状态变化（暂停/装修中/临时停业/假期营业…）只覆盖原有内容，不进归档。
+ */
+const BASE_OLD_FILE = 'base_old.csv';
+
+/** base_old.csv 的统一列 —— POST 与 SPB 混排，靠「来源」列区分 */
+const BASE_OLD_FIELDS = [
+  '来源', '省', '市', '区/市/县', '网点名称', '邮编', '地址',
+  '开办业务', '详情链接', '归档原因', '归档时间',
+];
+
+/** 归档原因（写进 base_old.csv 的「归档原因」列） */
+const ARCHIVE_REASON = {
+  rename: '名称变化',
+  revoked: '撤销',
+  removed: '疑似撤下',
+};
+
+/** 对比时生成的「应用后 base 快照」暂存目录名（位于 output/ 下） */
+const REF_STAGE_DIR = '_refstage';
+
+/** base_old.csv 的完整路径 */
+function baseOldPath() {
+  return path.join(config.baseDir, BASE_OLD_FILE);
+}
+
+/**
+ * 记录身份键：来源 + 属地 + 名称。
+ * 用来判断一条归档记录是否「重新出现在当前库里」（名称含状态括注，
+ * 所以「XX（暂停）」与「XX」是两条不同的记录）。
+ */
+function recordKey(source, r) {
+  return [source, r.province, r.city, r.district, r.name]
+    .map((s) => String(s == null ? '' : s).trim()).join('\u0001');
+}
+
+/** 名称里是否带「（撤销）」标记 —— 撤销的网点不再进当前库 */
+function isRevoked(r) {
+  return Intelligent.extractStatus(r && r.name).statuses.indexOf('已撤销') >= 0;
+}
+
+/** 统一归档字段：把 POST / SPB 的字段差异抹平成一行的「专属列」 */
+function archiveFields(source, r) {
+  return source === 'spb'
+    ? ['', '', r.services || '', r.detail_link || '']
+    : [r.postcode || '', r.address || '', '', ''];
+}
+
+/** 一条记录 → base_old.csv 的一行 */
+function archiveRow(source, r, reason, at) {
+  return [
+    source,
+    r.province || '', r.city || '', r.district || '', r.name || '',
+  ].concat(archiveFields(source, r), [reason || '', at || '']);
+}
+
+/**
+ * 读取 base_old.csv（GBK 统一列）。文件不存在或不可读返回 []。
+ * 表头按列名定位，列顺序变化、将来追加列都不会读错。
+ */
+function readBaseOld(filepath) {
+  const entries = [];
+  let rows;
+  try {
+    rows = readCsvRows(filepath);
+  } catch (e) {
+    return entries;                             // 没有归档文件就是空归档
+  }
+  if (!rows.length) return entries;
+
+  const header = rows[0].map((s) => String(s == null ? '' : s).trim());
+  const hasHeader = header[0] === '来源';
+  const col = (name, fallback) => {
+    const i = header.indexOf(name);
+    return i >= 0 ? i : fallback;
+  };
+  const idx = {
+    source: hasHeader ? 0 : -1,
+    province: col('省', 1), city: col('市', 2), district: col('区/市/县', 3),
+    name: col('网点名称', 4), postcode: col('邮编', 5), address: col('地址', 6),
+    services: col('开办业务', 7), link: col('详情链接', 8),
+    reason: col('归档原因', 9), at: col('归档时间', 10),
+  };
+  const cell = (row, i) => String((i >= 0 && row[i] != null) ? row[i] : '').trim();
+
+  for (let i = hasHeader ? 1 : 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row.length || !row.some((f) => String(f == null ? '' : f).trim())) continue;
+    const source = idx.source >= 0 ? cell(row, idx.source) : 'post';
+    const rec = {
+      source: source === 'spb' ? 'spb' : 'post',
+      province: cell(row, idx.province),
+      city: cell(row, idx.city),
+      district: cell(row, idx.district),
+      name: cell(row, idx.name),
+      postcode: cell(row, idx.postcode),
+      address: cell(row, idx.address),
+      services: cell(row, idx.services),
+      detail_link: cell(row, idx.link),
+      reason: cell(row, idx.reason),
+      archivedAt: cell(row, idx.at),
+    };
+    if (!rec.name || !rec.province) continue;   // 脏行直接跳过
+    entries.push(rec);
+  }
+  return entries;
+}
+
+/** 写 base_old.csv（GBK 统一列） */
+function writeBaseOld(filepath, entries) {
+  writeGbkCsv(filepath, BASE_OLD_FIELDS,
+    (entries || []).map((e) => archiveRow(e.source, e, e.reason, e.archivedAt)));
+}
+
 /** 从文件名中提取前缀，如 postbj, spbsh */
 function getFilePrefix(filename) {
   const m = /^(post|spb)([a-z]+)/.exec(filename);
@@ -1175,10 +1300,8 @@ function startCompare() {
     const stamp = stampStr();
 
     const reportPath = path.join(outputDir, `compare_report_${stamp}.txt`);
-    fs.writeFileSync(reportPath, reportLines.join('\n'), 'utf8');
 
     log(job, '  ' + '-'.repeat(50));
-    log(job, `  对比报告已保存: ${reportPath}`);
     log(job, `  对比 ${compared} 对 | 新增 ${added} | 缺失 ${missing}`);
 
     // ── 智能判别分析 ──
@@ -1253,6 +1376,70 @@ function startCompare() {
       log(job, '\n  output 中无文件，无需更新 base。');
     }
 
+    // ── 更新方案 ──
+    // 对比阶段就把「确认更新 base」之后的样子算出来：
+    //   ① 报告里写清楚哪些记录会被归档，人工确认时有据可依；
+    //   ② 生成一份应用后的 base 快照 + base_old，供渲染进程立即刷新参考库
+    //      —— 参考库只在对比时更新，爬取结束后不再自动合并。
+    log(job, '');
+    log(job, '  正在计算更新方案...');
+    log(job, '  ' + '-'.repeat(50));
+    const plan = computeBaseUpdate(job);
+
+    reportLines.push('');
+    reportLines.push('='.repeat(60));
+    reportLines.push('更新方案（点「确认更新 base」后执行）');
+    reportLines.push('='.repeat(60));
+    reportLines.push(`  本次写入当前库记录    : ${plan.currentTotal} 条`);
+    if (plan.revokedTotal) {
+      reportLines.push(`  其中已撤销(不进当前库): ${plan.revokedTotal} 条`);
+    }
+    reportLines.push(`  base_old 归档         : ${plan.archiveTotal} 条` +
+      `（本次新增 ${plan.archiveAdded}` +
+      (plan.archiveRestored ? ` / 移出 ${plan.archiveRestored}` : '') + '）');
+    for (const reason of Object.keys(plan.archiveByReason)) {
+      reportLines.push(`    ${reason}: ${plan.archiveByReason[reason]} 条`);
+    }
+    log(job, `  本次写入当前库 ${plan.currentTotal} 条` +
+      (plan.revokedTotal ? `（另有已撤销 ${plan.revokedTotal} 条不进当前库）` : ''));
+    log(job, `  base_old 归档 ${plan.archiveTotal} 条（本次新增 ${plan.archiveAdded}` +
+      (plan.archiveRestored ? ` / 移出 ${plan.archiveRestored}` : '') + '）');
+
+    fs.writeFileSync(reportPath, reportLines.join('\n'), 'utf8');
+    log(job, `  对比报告已保存: ${reportPath}`);
+
+    // ── 应用后的 base 快照（暂存）──
+    // 渲染进程按这份快照全量替换应用内参考库；base_old 一起放进去，
+    // 于是「当前网点 + 历史归档」在对比完成的那一刻就是可检索的。
+    const stageDir = path.join(outputDir, REF_STAGE_DIR);
+    let refLibrary = null;
+    try {
+      fs.rmSync(stageDir, { recursive: true, force: true });
+      fs.mkdirSync(stageDir, { recursive: true });
+      writeBaseSnapshot(stageDir, plan, { includeBaseOnly: true });
+      const stageOldPath = path.join(stageDir, BASE_OLD_FILE);
+      writeBaseOld(stageOldPath, plan.archiveEntries);
+
+      const files = plan.prefixes
+        .map((p) => ({ name: `${p.prefix}+base.csv`, sourceType: p.sourceType }))
+        .filter((f) => fs.existsSync(path.join(stageDir, f.name)));
+
+      refLibrary = {
+        stageDir,
+        files,
+        archivePath: stageOldPath,
+        archiveRelPath: `${REF_STAGE_DIR}/${BASE_OLD_FILE}`,
+        currentTotal: plan.currentTotal,
+        revokedTotal: plan.revokedTotal,
+        archiveTotal: plan.archiveTotal,
+        archiveAdded: plan.archiveAdded,
+        archiveByReason: plan.archiveByReason,
+      };
+      log(job, `  参考库快照已生成: ${files.length} 个文件 → ${stageDir}`);
+    } catch (e) {
+      log(job, `  [警告] 生成参考库快照失败，本次不刷新应用内参考库: ${e.message}`);
+    }
+
     // 前端展示用：报告正文（太长时截断，完整内容在报告文件里）
     const reportText = reportLines.join('\n');
 
@@ -1268,64 +1455,289 @@ function startCompare() {
       outputFileCount: outputMap.size,
       baseFileCount: baseMap.size,
       canApply: outputMap.size > 0,
+      // 更新方案 + 参考库快照（渲染进程据此刷新 PODatabase）
+      plan: {
+        currentTotal: plan.currentTotal,
+        revokedTotal: plan.revokedTotal,
+        archiveTotal: plan.archiveTotal,
+        archiveAdded: plan.archiveAdded,
+        archiveRestored: plan.archiveRestored,
+        archiveByReason: plan.archiveByReason,
+        // 逐文件的本次归档明细，供弹窗逐省展示
+        byPrefix: plan.prefixes.filter((p) => p.outFile).map((p) => ({
+          prefix: p.prefix,
+          current: p.current.length,
+          revoked: p.revoked.length,
+          renamed: p.archived ? p.archived.renamed : 0,
+          removed: p.archived ? p.archived.removed : 0,
+        })),
+      },
+      refLibrary,
     };
   });
 }
 
 /**
- * 把 output/*.csv 复制为 base/{prefix}+base.csv，并删除 base 中同前缀的旧文件。
+ * 计算「对比 → 更新 base」要做的事，对比与回写共用同一份方案：
+ *
+ *   当前库（写进 base/{前缀}+base.csv）
+ *     = output 的记录，带「（撤销）」标记的除外；
+ *   归档（写进 base/base_old.csv）
+ *     = 更名前后的旧名称记录、带「（撤销）」的记录、output 里已消失的旧记录。
+ *
+ * 归档文件是累积的：与已有 base_old.csv 合并后，**只保留当前库里已经没有的**
+ * 记录（某网点重新出现时会被移出归档）。已有归档条目保持其原始归档原因与时间。
+ *
+ * 不传 job 时静默执行（供测试直接调用）。
+ *
+ * @returns {object} {
+ *   prefixes: [{prefix, sourceType, outFile, baseFile, fields, current, revoked,
+ *               outputCount, archived:{renamed,removed}}],
+ *   outputMap, baseMap,
+ *   archiveEntries, archiveTotal, archiveByReason,
+ *   archiveAdded, archiveRestored,
+ *   currentTotal, revokedTotal, at,
+ * }
+ */
+function computeBaseUpdate(job) {
+  const outputDir = config.outputDir;
+  const baseDir = config.baseDir;
+  const say = (t) => { if (job) log(job, t); };
+  const at = humanTime();
+
+  const outputMap = scanByPrefix(outputDir);
+  const baseMap = scanByPrefix(baseDir);
+  const allPrefixes = Array.from(new Set([...outputMap.keys(), ...baseMap.keys()])).sort();
+
+  const prefixes = [];
+  const currentKeys = new Set();      // 应用后仍存在的记录（判断归档是否还有效）
+  const fresh = new Map();            // 本次新归档：身份键 → 条目（先到先得）
+  const addArchive = (source, r, reason) => {
+    const key = recordKey(source, r);
+    if (!key || fresh.has(key)) return;
+    fresh.set(key, Object.assign({ source, reason, archivedAt: at }, r));
+  };
+
+  let currentTotal = 0;
+  let revokedTotal = 0;
+
+  for (const prefix of allPrefixes) {
+    if (job) checkCancelled(job);
+    const outFile = outputMap.get(prefix);
+    const baseFile = baseMap.get(prefix);
+    const sourceType = /^spb/.test(prefix) ? 'spb' : 'post';
+    const read = sourceType === 'spb' ? readSpbCsv : readPostCsv;
+    const fields = sourceType === 'spb' ? SPB_FIELDS : POST_FIELDS;
+
+    // 只有 base 的前缀（output 里没有）：保持不动，其记录仍算当前库
+    if (!outFile) {
+      const recs = baseFile ? read(path.join(baseDir, baseFile)) : [];
+      for (const r of recs) currentKeys.add(recordKey(sourceType, r));
+      prefixes.push({
+        prefix, sourceType, outFile: null, baseFile, fields,
+        current: recs, revoked: [], outputCount: 0,
+      });
+      continue;
+    }
+
+    const recs1 = read(path.join(outputDir, outFile));
+    const recs2 = baseFile ? read(path.join(baseDir, baseFile)) : [];
+    const revoked = recs1.filter(isRevoked);
+    const current = recs1.filter((r) => !isRevoked(r));
+    for (const r of current) currentKeys.add(recordKey(sourceType, r));
+
+    currentTotal += current.length;
+    revokedTotal += revoked.length;
+    const entry = {
+      prefix, sourceType, outFile, baseFile, fields,
+      current, revoked, outputCount: recs1.length,
+      archived: { renamed: 0, removed: 0 },     // 本次归档明细（逐文件）
+    };
+    prefixes.push(entry);
+
+    // 撤销的记录一律归档（它们不会进当前库）
+    for (const r of revoked) addArchive(sourceType, r, ARCHIVE_REASON.revoked);
+    if (!recs2.length) {
+      say(`    ${prefix}: 新增 ${current.length} 条，base 中无对照文件`);
+      continue;
+    }
+
+    // 与旧版配对：名称变化 → 旧名称那条归档；剩下的旧记录 → 疑似撤下
+    const m = Intelligent.matchSameSource(recs1, recs2, sourceType);
+    const changes = Intelligent.classifyChanges(m.matchedPairs, sourceType);
+    let renamed = 0;
+    for (const c of changes) {
+      if (c.categories.indexOf('名称变化') < 0) continue;
+      addArchive(sourceType, c.rec2, ARCHIVE_REASON.rename);
+      renamed++;
+    }
+    for (const [, r] of m.unmatched2) addArchive(sourceType, r, ARCHIVE_REASON.removed);
+
+    entry.archived = { renamed, removed: m.unmatched2.length };
+    say(`    ${prefix}: 当前 ${current.length} 条` +
+        (revoked.length ? `（剔除已撤销 ${revoked.length} 条）` : '') +
+        `，归档 更名 ${renamed} / 疑似撤下 ${m.unmatched2.length}`);
+  }
+
+  // ── 与已有归档合并 ──
+  const archiveMap = new Map();
+  for (const e of readBaseOld(baseOldPath())) {
+    const key = recordKey(e.source, e);
+    if (key && !archiveMap.has(key)) archiveMap.set(key, e);
+  }
+  let archiveAdded = 0;
+  for (const [key, e] of fresh) {
+    if (archiveMap.has(key)) continue;          // 已在归档里：保留原原因与时间
+    archiveMap.set(key, e);
+    archiveAdded++;
+  }
+
+  // 只存当前没有的：重新出现在当前库里的归档记录移出
+  let archiveRestored = 0;
+  for (const key of Array.from(archiveMap.keys())) {
+    if (!currentKeys.has(key)) continue;
+    archiveMap.delete(key);
+    archiveRestored++;
+  }
+
+  const archiveEntries = Array.from(archiveMap.values());
+  const archiveByReason = {};
+  for (const e of archiveEntries) {
+    const reason = e.reason || '未标注';
+    archiveByReason[reason] = (archiveByReason[reason] || 0) + 1;
+  }
+
+  return {
+    prefixes, outputMap, baseMap,
+    archiveEntries, archiveTotal: archiveEntries.length, archiveByReason,
+    archiveAdded, archiveRestored,
+    currentTotal, revokedTotal, at,
+  };
+}
+
+/**
+ * 把方案里的「当前库」写进 dir。
+ *
+ * 没有撤销记录的前缀直接字节复制（保持原始编码/换行，避免无谓的重编码）；
+ * 有撤销记录时才按记录重写，把「（撤销）」那几行剔出去。
+ *
+ * @param {string} dir 目标目录（base 本身，或对比用的暂存目录）
+ * @param {object} plan computeBaseUpdate 的结果
+ * @param {object} [opts]
+ * @param {boolean} [opts.includeBaseOnly] 是否连「只有 base」的前缀也复制过去
+ *        （暂存目录需要一份完整快照；写回 base 时它们本来就在那儿）
+ */
+function writeBaseSnapshot(dir, plan, opts) {
+  const o = opts || {};
+  fs.mkdirSync(dir, { recursive: true });
+  const copied = [];
+  const rewritten = [];
+
+  for (const p of plan.prefixes) {
+    if (!p.outFile) {
+      if (o.includeBaseOnly && p.baseFile) {
+        fs.copyFileSync(path.join(config.baseDir, p.baseFile), path.join(dir, p.baseFile));
+        copied.push(p.baseFile);
+      }
+      continue;
+    }
+
+    const dstName = `${p.prefix}+base.csv`;
+    const dst = path.join(dir, dstName);
+    if (p.revoked.length === 0) {
+      fs.copyFileSync(path.join(config.outputDir, p.outFile), dst);
+      copied.push(dstName);
+    } else {
+      writeGbkCsv(dst, p.fields, p.current.map((r) => (p.sourceType === 'spb'
+        ? [r.province, r.city, r.district, r.name, r.services, r.detail_link]
+        : [r.province, r.city, r.district, r.name, r.postcode, r.address])));
+      rewritten.push(dstName);
+    }
+  }
+
+  return { written: copied.length + rewritten.length, copied, rewritten };
+}
+
+/**
+ * 把 output/*.csv 覆盖为 base/{prefix}+base.csv（删除 base 中同前缀的旧文件），
+ * 并把涉及名称变化 / 撤销 / 疑似撤下的记录写进 base/base_old.csv。
  * 对应 crawler.py compare_and_update 的后半段（去掉交互确认）。
  */
 function applyBase() {
   return runJob('apply-base', async (job) => {
-    const outputDir = config.outputDir;
     const baseDir = config.baseDir;
     fs.mkdirSync(baseDir, { recursive: true });
 
-    const outputMap = scanByPrefix(outputDir);
-    const baseMap = scanByPrefix(baseDir);
-
-    if (outputMap.size === 0) {
+    const plan = computeBaseUpdate(job);
+    if (plan.outputMap.size === 0) {
       log(job, '[提示] output 中无 CSV 文件，无需更新 base。');
-      return { updated: 0, deleted: [], copied: [] };
+      return {
+        updated: 0, deleted: [], copied: [], rewritten: [],
+        archived: 0, archiveByReason: {}, archivePath: null, baseDir,
+      };
     }
 
     log(job, '  正在更新 base 文件夹...');
-    let updated = 0;
+
+    // 删除 base 中同前缀的旧格式文件（非 +base 格式）
     const deleted = [];
-    const copied = [];
-
-    for (const [prefix, outFile] of outputMap) {
+    for (const p of plan.prefixes) {
       checkCancelled(job);
-      const outPath = path.join(outputDir, outFile);
-      const newName = `${prefix}+base.csv`;
-      const newBasePath = path.join(baseDir, newName);
-
-      // 删除 base 中同前缀的旧格式文件（非 +base 格式）
-      const oldBaseFile = baseMap.get(prefix);
-      if (oldBaseFile && oldBaseFile !== newName) {
-        const oldPath = path.join(baseDir, oldBaseFile);
+      if (!p.outFile) continue;
+      const newName = `${p.prefix}+base.csv`;
+      if (p.baseFile && p.baseFile !== newName) {
+        const oldPath = path.join(baseDir, p.baseFile);
         try {
           if (fs.statSync(oldPath).isFile()) {
             fs.unlinkSync(oldPath);
-            deleted.push(oldBaseFile);
-            log(job, `    删除旧文件: ${oldBaseFile}`);
+            deleted.push(p.baseFile);
+            log(job, `    删除旧文件: ${p.baseFile}`);
           }
         } catch (e) {
           // 文件不存在则忽略
         }
       }
-
-      fs.copyFileSync(outPath, newBasePath);
-      copied.push(newName);
-      log(job, `    ${outFile}  →  ${newName}`);
-      updated++;
     }
 
-    log(job, `\n  base 文件夹已更新，共处理 ${updated} 个文件。`);
-    log(job, '  [提示] 应用内参考库已同步刷新，重启后将从 base 重新加载。');
+    const res = writeBaseSnapshot(baseDir, plan, { includeBaseOnly: false });
+    for (const p of plan.prefixes) {
+      if (!p.outFile) continue;
+      log(job, `    ${p.outFile}  →  ${p.prefix}+base.csv` +
+        (p.revoked.length ? `  （剔除已撤销 ${p.revoked.length} 条，转入 base_old）` : ''));
+    }
 
-    return { updated, deleted, copied, baseDir };
+    // ── 归档文件 ──
+    // 有归档内容、或本来就有归档文件（可能这次被清空）时才写，避免凭空造一个空文件
+    const oldPath = baseOldPath();
+    let archivePath = null;
+    if (plan.archiveTotal || fs.existsSync(oldPath)) {
+      writeBaseOld(oldPath, plan.archiveEntries);
+      archivePath = oldPath;
+      log(job, `  base_old 归档: ${plan.archiveTotal} 条` +
+        `（本次新增 ${plan.archiveAdded}` +
+        (plan.archiveRestored ? ` / 移出 ${plan.archiveRestored}` : '') + '）');
+      const reasons = Object.keys(plan.archiveByReason);
+      if (reasons.length) {
+        log(job, '    ' + reasons.map((r) => `${r} ${plan.archiveByReason[r]}`).join(' / '));
+      }
+      log(job, `    文件: ${oldPath}`);
+    }
+
+    log(job, `\n  base 文件夹已更新，共处理 ${res.written} 个文件。`);
+    log(job, '  [提示] 应用内参考库在「对比」完成时刷新，重启后从 base 重新加载。');
+
+    return {
+      updated: res.written,
+      deleted,
+      copied: res.copied,
+      rewritten: res.rewritten,
+      archived: plan.archiveTotal,
+      archiveByReason: plan.archiveByReason,
+      archiveAdded: plan.archiveAdded,
+      archiveRestored: plan.archiveRestored,
+      archivePath,
+      baseDir,
+    };
   });
 }
 
@@ -1809,6 +2221,9 @@ module.exports = {
   PROVINCES,
   POST_FIELDS,
   SPB_FIELDS,
+  BASE_OLD_FILE,
+  BASE_OLD_FIELDS,
+  ARCHIVE_REASON,
   configure,
   resolveCompareExe,
   getStatus,
@@ -1829,4 +2244,12 @@ module.exports = {
   findLatestFile,
   getFilePrefix,
   csvLine,
+  // base_old 归档与更新方案
+  baseOldPath,
+  readBaseOld,
+  writeBaseOld,
+  isRevoked,
+  recordKey,
+  computeBaseUpdate,
+  writeBaseSnapshot,
 };

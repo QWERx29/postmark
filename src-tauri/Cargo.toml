@@ -1,0 +1,27 @@
+[package]
+name = "postmark"
+version = "1.1.0"
+description = "新一代日戳管理系统 — Tauri 2 外壳"
+edition = "2021"
+rust-version = "1.77"
+
+[dependencies]
+# 只用来拉起并管理已有的 Node 服务器，不实现任何业务逻辑
+tauri = { version = "2", features = [] }
+anyhow = "1"
+thiserror = "2"
+
+[build-dependencies]
+# 处理 tauri.conf.json（图标、资源、安装包配置）。
+# 注意：只要 Cargo.toml 旁存在 tauri.conf.json，tauri::generate_context!()
+# 就要求 OUT_DIR 由 build script 提供 —— 缺了它会在编译期报
+# "OUT_DIR env var is not set, do you have a build script?"。
+tauri-build = { version = "2", features = [] }
+
+[profile.release]
+# 体积优先：外壳里没有热点代码，优化换空间很划算
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

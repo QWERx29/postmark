@@ -10,6 +10,18 @@ Thumbs.db
 node_modules/
 release/
 
+# 本地数据：npm start 使用的 Electron profile，以及记录恢复/备份产物
+.userdata/
+_recovery/
+
+# 浏览器模式（launch.js）使用的专属浏览器 profile：记录与缓存都在这里
+data/
+
+# Tauri：本地 Rust 工具链、构建产物、暂存资源（都是可重建的，不入库）
+.rust/
+src-tauri/target/
+src-tauri/resources/
+
 # Claude
 .claude/
 
@@ -21,3 +33,4 @@ scripts/_realdiff.json
 
 # Python
 __pycache__/
+scripts/_tmp_*

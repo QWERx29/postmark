@@ -1,7 +1,8 @@
 /**
  * 数据录入表单 — 模态框
  * ======================
- * 依赖: PostmarkData (data.js), RecordStore (store.js)
+ * 依赖: PostmarkData (data.js), RecordStore (store.js),
+ *       ImageEditor (image-editor.js), ImageCore (image.js)
  *
  * 功能:
  *   1. 省/市/县三级联动下拉框
@@ -9,6 +10,7 @@
  *   3. 戳号动态增删
  *   4. 邮资机条件字段
  *   5. 风景/文化日戳条件字段 + 动态名称增删
+ *   6. 日戳图片上传/编辑/保存（ImageEditor 负责编辑，见 image-editor.js）
  */
 
 const EntryForm = (function () {
@@ -69,6 +71,11 @@ const EntryForm = (function () {
       scenicList:   document.getElementById('f-scenic-list'),
       addScenicBtn: document.getElementById('f-add-scenic'),
       notes:        document.getElementById('f-notes'),
+      photoArea:    document.getElementById('f-photo-area'),
+      photoList:    document.getElementById('f-photo-list'),
+      photoAddBtn:  document.getElementById('f-photo-add'),
+      photoInput:   document.getElementById('f-photo-input'),
+      photoCount:   document.getElementById('f-photo-count'),
       submitBtn:    document.getElementById('f-submit'),
       cancelBtn:    document.getElementById('f-cancel'),
       saveId:       document.getElementById('f-save-id'),
@@ -478,6 +485,247 @@ const EntryForm = (function () {
   }
 
   // ============================================================
+  // 日戳图片
+  // ============================================================
+  // 图片本身由服务端写到 output/images/<记录ID>/，记录里只存相对路径
+  // （设计稿第 14 / 15 节：目录由服务端管，渲染层不碰文件系统）。
+  //
+  // 表单里的图片有两种状态：
+  //   - 已保存：photoSaved 里有相对路径，缩略图直接走 /images/<relPath>
+  //   - 待保存：只有原始文件对象，缩略图是本地的 objectURL
+  // 记录只在点「保存」时把已保存的那些写进 photos 字段。
+
+  let photoSaved = [];                 // 已保存的相对路径
+  let photoPending = [];               // [{file, name, url}] 尚未保存
+  let imagesDir = '';                  // 服务端图片根目录（用于提示里显示完整路径）
+
+  function imagesBase() {
+    return '/images/';
+  }
+
+  function savedFileName(relPath) {
+    const i = String(relPath).lastIndexOf('/');
+    return i >= 0 ? relPath.slice(i + 1) : relPath;
+  }
+
+  /** 未关联记录时服务端会把它放进 _unfiled/，界面上提示一下 */
+  function isUnfiled(relPath) {
+    const unfiled = (typeof ImgNaming !== 'undefined') ? ImgNaming.UNFILED_DIR : '_unfiled';
+    return String(relPath).startsWith(unfiled + '/');
+  }
+
+  function updatePhotoCount() {
+    const saved = photoSaved.length;
+    const pending = photoPending.length;
+    const total = saved + pending;
+    if (!dom.photoCount) return;
+    if (total === 0) {
+      dom.photoCount.textContent = '';
+      return;
+    }
+    dom.photoCount.textContent = pending
+      ? `已保存 ${saved} 张，待保存 ${pending} 张`
+      : `已保存 ${saved} 张`;
+    dom.photoCount.classList.toggle('has-pending', pending > 0);
+  }
+
+  function makePhotoThumb(entry) {
+    const thumb = document.createElement('div');
+    thumb.className = 'photo-thumb' + (entry.pending ? ' photo-pending' : '');
+
+    const img = document.createElement('img');
+    img.alt = entry.name;
+    img.loading = 'lazy';
+    if (entry.pending) {
+      const url = URL.createObjectURL(entry.file);
+      entry.url = url;
+      img.src = url;
+    } else {
+      img.src = imagesBase() + String(entry.relPath).split('/').map(encodeURIComponent).join('/');
+    }
+    if (entry.width && entry.height) {
+      img.title = `${entry.name}\n${entry.width} × ${entry.height}`;
+    } else {
+      img.title = entry.name;
+    }
+
+    const bar = document.createElement('div');
+    bar.className = 'photo-thumb-bar';
+    const nameEl = document.createElement('span');
+    nameEl.className = 'photo-thumb-name';
+    nameEl.textContent = entry.name;
+    bar.appendChild(nameEl);
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'photo-thumb-del';
+    btn.textContent = '×';
+    btn.title = entry.pending ? '放弃这张图片' : '从记录中移除';
+    btn.addEventListener('click', () => {
+      if (entry.pending) removePendingPhoto(entry);
+      else removeSavedPhoto(entry.relPath);
+    });
+
+    thumb.append(img, bar, btn);
+    return thumb;
+  }
+
+  function renderPhotos() {
+    if (!dom.photoList) return;
+    dom.photoList.innerHTML = '';
+
+    photoSaved.forEach((relPath, i) => {
+      dom.photoList.appendChild(makePhotoThumb({
+        pending: false,
+        relPath,
+        name: savedFileName(relPath),
+        width: 0,
+        height: 0,
+        index: i + 1,
+      }));
+    });
+
+    photoPending.forEach((entry, i) => {
+      dom.photoList.appendChild(makePhotoThumb({
+        pending: true,
+        file: entry.file,
+        name: entry.name,
+        index: photoSaved.length + i + 1,
+      }));
+    });
+
+    updatePhotoCount();
+  }
+
+  function removePendingPhoto(entry) {
+    const i = photoPending.indexOf(entry);
+    if (i >= 0) photoPending.splice(i, 1);
+    if (entry.url) URL.revokeObjectURL(entry.url);
+    renderPhotos();
+  }
+
+  function removeSavedPhoto(relPath) {
+    const i = photoSaved.indexOf(relPath);
+    if (i >= 0) photoSaved.splice(i, 1);
+    // 服务端文件不在这里删：记录还没保存，删了文件反而会让"取消"无法回退。
+    // 文件清理交给记录删除流程（或在编辑保存时按 photos 差集处理）。
+    renderPhotos();
+  }
+
+  /** 当前表单里的记录快照 —— 图片命名要用到机构号/盖销时间/邮局名 */
+  function currentRecordDraft() {
+    return {
+      institutionCode: dom.instCode ? dom.instCode.value.trim() : '',
+      cancelDate: getCancelDateValue(),
+      postOffice: dom.postOffice ? dom.postOffice.value.trim() : '',
+    };
+  }
+
+  /** 图片子目录 = 记录 ID；记录还没保存过时服务端会落到 _unfiled/ */
+  function photoSubdir() {
+    return dom.saveId.value || '';
+  }
+
+  /** 读取服务端图片目录，用于界面提示 */
+  async function loadImagesDir() {
+    if (imagesDir) return imagesDir;
+    try {
+      const res = await fetch('/api/images/config');
+      if (res.ok) {
+        const data = await res.json();
+        imagesDir = data.imagesDir || '';
+      }
+    } catch (e) { /* 拿不到就只显示文件名 */ }
+    return imagesDir;
+  }
+
+  async function handleFilesPicked(fileList) {
+    const files = Array.from(fileList || []);
+    if (files.length === 0) return;
+
+    // 一次选多张时提示会很多，这里统一说明一次
+    if (files.length > 1) {
+      const go = await Dialog.confirm(`已选择 ${files.length} 张图片，将逐张进入编辑界面。\n\n继续吗？`);
+      if (!go) return;
+    }
+
+    for (const file of files) {
+      const result = await openEditorFor(file);
+      if (!result) continue;         // 用户取消了这一张：继续下一张，不算错误
+      photoSaved.push(result.relPath);
+      renderPhotos();
+    }
+  }
+
+  /**
+   * 打开编辑器处理一张图。
+   * @returns {Promise<object|null>} 保存结果；用户取消返回 null
+   */
+  async function openEditorFor(file) {
+    // 先做一次本地校验，避免为明显不合法的文件开编辑器。
+    // validate 是 async 的：它要读文件头做内容嗅探，不能只信扩展名。
+    if (typeof ImageCore !== 'undefined') {
+      const invalid = await ImageCore.validate(file);
+      if (invalid) {
+        await Dialog.alert(invalid.message);
+        return null;
+      }
+    }
+
+    const editorCtx = {
+      record: currentRecordDraft(),
+      recordId: photoSubdir(),
+      // 序号接在已保存的图片之后，文件名不会互相顶掉
+      index: photoSaved.length + 1,
+    };
+
+    let result = null;
+    try {
+      result = await ImageEditor.open(file, editorCtx);
+    } catch (err) {
+      await Dialog.alert((err && err.message) || '无法打开图片编辑器。');
+      return null;
+    }
+    if (!result) return null;
+
+    if (!photoSubdir() && isUnfiled(result.relPath)) {
+      // 记录还没保存过，图片先落在 _unfiled/，提示一次让用户心里有数
+      const dir = await loadImagesDir();
+      if (!sessionStorage.getItem('postmark_unfiled_hint')) {
+        sessionStorage.setItem('postmark_unfiled_hint', '1');
+        await Dialog.alert(
+          '图片已保存到临时目录（因为这条记录还没保存过）。\n\n' +
+          (dir ? `目录：${dir}\n\n` : '') +
+          '保存记录后，新上传的图片会自动按机构号归档。'
+        );
+      }
+    }
+    return result;
+  }
+
+  function resetPhotos() {
+    photoPending.forEach((e) => { if (e.url) URL.revokeObjectURL(e.url); });
+    photoPending = [];
+    photoSaved = [];
+    renderPhotos();
+  }
+
+  function setPhotos(list) {
+    photoPending.forEach((e) => { if (e.url) URL.revokeObjectURL(e.url); });
+    photoPending = [];
+    photoSaved = Array.isArray(list) ? list.slice() : [];
+    renderPhotos();
+  }
+
+  function getPhotoPaths() {
+    return photoSaved.slice();
+  }
+
+  function hasPendingPhotos() {
+    return photoPending.length > 0;
+  }
+
+  // ============================================================
   // 表单填充 (编辑模式)
   // ============================================================
   function populateForm(record) {
@@ -528,6 +776,9 @@ const EntryForm = (function () {
     }
     toggleScenicFields();
 
+    // 图片：记录里只存相对路径，界面按路径从 /images/ 取缩略图
+    setPhotos(record.photos);
+
     dom.notes.value = record.notes || '';
   }
 
@@ -552,6 +803,16 @@ const EntryForm = (function () {
     if (!ic || !/^\d{8}$/.test(ic)) { await Dialog.alert('机构号必须为8位数字'); return; }
     if (!cd || !/^\d{10}$/.test(cd)) { await Dialog.alert('请选择完整的盖销日期和时间'); return; }
 
+    // 还有图片没走完"编辑→保存"：存进记录只会在列表里显示成破图，先问清楚
+    if (hasPendingPhotos()) {
+      const n = photoPending.length;
+      const go = await Dialog.confirm(
+        `还有 ${n} 张图片没有保存。\n\n` +
+        '选择「确定」放弃这些图片并保存记录，选择「取消」回去继续处理。'
+      );
+      if (!go) return;
+    }
+
     // 获取区县值 (select 或 input)
     const dist = getDistrictValue();
 
@@ -574,6 +835,7 @@ const EntryForm = (function () {
       meterLowerRing: dom.hasMeter.checked ? dom.meterLower.value.trim() : '',
       hasScenicPostmark: dom.hasScenic.checked,
       scenicNames: dom.hasScenic.checked ? getScenicValues() : [],
+      photos: getPhotoPaths(),
       notes: dom.notes.value.trim(),
     };
 
@@ -626,6 +888,7 @@ const EntryForm = (function () {
       dom.stampList.innerHTML = '';
       addStampRow('');
       dom.instCode.value = '';
+      resetPhotos();
       // 默认日期为今天，时间为当前小时
       const now = new Date();
       const pad = n => String(n).padStart(2, '0');
@@ -643,6 +906,8 @@ const EntryForm = (function () {
   }
 
   function closeForm() {
+    // 清掉待保存图片的 objectURL，避免长时间占用内存
+    resetPhotos();
     dom.overlay.classList.remove('active');
     document.body.style.overflow = '';
   }
@@ -740,6 +1005,38 @@ const EntryForm = (function () {
 
     // 添加风景戳名称
     dom.addScenicBtn.addEventListener('click', () => addScenicRow(''));
+
+    // ---- 图片上传 ----
+    if (dom.photoAddBtn) {
+      dom.photoAddBtn.addEventListener('click', () => dom.photoInput.click());
+    }
+    if (dom.photoInput) {
+      dom.photoInput.addEventListener('change', async function () {
+        // 先把 FileList 拷成真数组，再清空 input.value。
+        // FileList 是**活对象**：直接 this.value = '' 会把它一并清空，
+        // 于是"选了文件却什么都没发生"，而且不报任何错。
+        const files = Array.from(this.files || []);
+        this.value = '';
+        await handleFilesPicked(files);
+      });
+    }
+    if (dom.photoArea) {
+      // 拖拽上传（设计稿 3.1：作为"后续功能"，这里顺手支持，不额外增加界面）
+      dom.photoArea.addEventListener('dragover', (e) => {
+        if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+        e.preventDefault();
+        dom.photoArea.classList.add('photo-dragover');
+      });
+      dom.photoArea.addEventListener('dragleave', (e) => {
+        if (e.target === dom.photoArea) dom.photoArea.classList.remove('photo-dragover');
+      });
+      dom.photoArea.addEventListener('drop', async (e) => {
+        if (!e.dataTransfer || !e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
+        e.preventDefault();
+        dom.photoArea.classList.remove('photo-dragover');
+        await handleFilesPicked(e.dataTransfer.files);
+      });
+    }
 
     // 提交
     dom.form.addEventListener('submit', handleSubmit);

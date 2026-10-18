@@ -297,6 +297,38 @@ function pickProvince(body, value) {
   return findOne(body, 'rm-selector-detail');
 }
 
+/** 弹窗里的标签按钮（按出现顺序） */
+function tabsOf(root) {
+  return findAll(root, 'rm-tab');
+}
+
+/**
+ * 点某个标签（走 makeTabs 注册的真实监听器），返回它的内容面板。
+ * 标签内容惰性构建：不点进去，里面的分段/表格都还不存在。
+ */
+function openTab(root, label) {
+  const btns = tabsOf(root);
+  const i = btns.map((b) => b.textContent).indexOf(label);
+  if (i < 0) return null;
+  btns[i].fire('click', { target: btns[i] });
+  return findAll(root, 'rm-tab-panel')[i] || null;
+}
+
+/** 当前激活（is-active）的标签按钮 */
+function activeTab(root) {
+  return tabsOf(root).filter((b) => b.classList.contains('is-active'))[0] || null;
+}
+
+/**
+ * 建一个智能比较弹窗并切到「对比报告」标签 —— 报告类的断言都落在那个标签里
+ * （默认激活的是「更新方案」，惰性构建意味着不切换就取不到报告内容）。
+ */
+function compareReport(Page, result, onApply) {
+  const spec = Page._buildCompareSpec(result, onApply);
+  openTab(spec.body, '对比报告');
+  return spec;
+}
+
 /**
  * 一个文件块（buildCompareFileDetail 的返回）里各子节点的角色，按顺序列出。
  * 用来断言「智能判别在上、txt_compare 在下」。
@@ -375,8 +407,30 @@ function testCompareModal(Page) {
     /output 3 个文件/.test(spec.subtitle) && /base 2 个文件/.test(spec.subtitle),
     spec.subtitle);
 
-  // ---- 概览：不选省份时只有卡片 ----
-  const cards = findAll(spec.body, 'rm-card');
+  // ---- 标签页：更新方案 / 对比报告 ----
+  const tabLabels = tabsOf(spec.body).map((b) => b.textContent);
+  eq('标签栏两项', tabLabels.join(' | '), '更新方案 | 对比报告');
+  eq('默认激活第一个标签（更新方案）', activeTab(spec.body).textContent, '更新方案');
+
+  const panels = findAll(spec.body, 'rm-tab-panel');
+  eq('面板数 = 标签数', panels.length, 2);
+  const planPanel = panels[0];
+  const reportPanel = panels[1];
+  eq('默认只显示「更新方案」面板',
+    planPanel.style.display + ' / ' + reportPanel.style.display, 'block / none');
+  check('未激活的「对比报告」尚未构建（惰性）',
+    findOne(spec.body, 'rm-selector-detail') === null);
+  check('方案标签说明本次没有更新方案（fixture 未给 plan）',
+    /未返回 plan/.test(findAll(planPanel, 'rm-footnote').map((f) => f.textContent).join(' | ')),
+    findAll(planPanel, 'rm-footnote').map((f) => f.textContent).join(' | '));
+
+  // ---- 切到「对比报告」：概览卡片 + 选省明细 + 报告全文 ----
+  openTab(spec.body, '对比报告');
+  eq('切换后激活「对比报告」', activeTab(spec.body).textContent, '对比报告');
+  eq('切换后显隐互换',
+    planPanel.style.display + ' / ' + reportPanel.style.display, 'none / block');
+
+  const cards = findAll(reportPanel, 'rm-card');
   eq('汇总卡片数', cards.length, 3);
   eq('卡片1 数值/标签', cards[0].textContent, '2对比文件对');
   eq('卡片2 数值/标签', cards[1].textContent, '1新增');
@@ -472,7 +526,7 @@ function testHugeReportTruncation(Page) {
               status: 'compared', report: huge }],
   };
 
-  const spec = Page._buildCompareSpec(result, null);
+  const spec = compareReport(Page, result, null);
   const sections = topSections(spec.body);
 
   // 展开「完整报告文本」：不能把 29 MB 原样塞进文本节点
@@ -503,7 +557,7 @@ function testHugeReportTruncation(Page) {
   eq('单文件输出同样截到 3000 行', pairPre.textContent.split('\n').length, 3000);
 
   // 小文本不该被加提示（避免虚报截断）
-  const small = Page._buildCompareSpec(Object.assign({}, result, {
+  const small = compareReport(Page, Object.assign({}, result, {
     reportText: '只有一行', pairs: [],
   }), null);
   eq('无文件对时没有下拉框', selectOf(small.body), null);
@@ -582,17 +636,17 @@ function testIntelligentBlock(Page) {
   // ---- 没有判别结果（老引擎 / 有一侧目录为空）时弹窗保持原样 ----
   // 引擎侧这两个字段是同时有或同时无的，这里照实模拟
   const noIntel = { intelligent: undefined, intelligentReportPath: null, intelligentReportText: '' };
-  const legacy = Page._buildCompareSpec(Object.assign({}, base, noIntel), null);
+  const legacy = compareReport(Page, Object.assign({}, base, noIntel), null);
   eq('无 intelligent 时顶层只剩完整报告', topSections(legacy.body).length, 1);
   eq('无 intelligent 时只有 3 张概览卡', findAll(legacy.body, 'rm-card').length, 3);
   check('无 intelligent 时副标题不提判别报告',
     !/智能判别报告/.test(legacy.subtitle), legacy.subtitle);
-  const empty = Page._buildCompareSpec(
+  const empty = compareReport(Page,
     Object.assign({}, base, noIntel, { intelligent: [] }), null);
   eq('intelligent 为空数组时同样只剩完整报告', topSections(empty.body).length, 1);
 
   // ---- 有判别结果 ----
-  const spec = Page._buildCompareSpec(base, null);
+  const spec = compareReport(Page, base, null);
   check('副标题含智能判别报告落盘路径',
     spec.subtitle.includes('intelligent_report_20260917_214350.txt'), spec.subtitle);
 
@@ -714,7 +768,7 @@ function testIntelligentBlock(Page) {
     findOne(bodyOf(sections[0]), 'rm-pre').textContent, '智能判别报告正文');
 
   // 全干净时：汇总卡片显示 ✓，明细给一句说明
-  const allClean = Page._buildCompareSpec(
+  const allClean = compareReport(Page,
     Object.assign({}, base, { intelligent: [clean] }), null);
   check('全干净时汇总卡片显示 ✓',
     findAll(allClean.body, 'rm-card').some((c) => c.textContent === '✓两份数据完全一致'));
@@ -728,7 +782,7 @@ function testIntelligentBlock(Page) {
     summary: { byCategory: { '名称变化': 250 }, new: 0, removed: 0, blocks: 0, comprehensive: 0 },
   });
   const cropDetail = pickProvince(
-    Page._buildCompareSpec(Object.assign({}, base, { intelligent: [cropped] }), null).body, 'bj');
+    compareReport(Page, Object.assign({}, base, { intelligent: [cropped] }), null).body, 'bj');
   const notes = findAll(cropDetail, 'rm-footnote').map((n) => n.textContent).join(' | ');
   check('裁剪时提示总数与已列条数',
     /共 250 条，此处只列前 1 条/.test(notes), notes);

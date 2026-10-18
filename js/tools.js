@@ -463,6 +463,7 @@
     const districtSel = $('tool-po-search-district');
     const sourceSel = $('tool-po-search-source');
     const keywordInput = $('tool-po-search-input');
+    const historyCb = $('tool-po-search-history');
     const clearBtn = $('tool-po-search-clear');
     const bodyEl = $('tool-po-search-body');
     const metaEl = $('tool-po-search-meta');
@@ -512,17 +513,21 @@
 
     // ---- 执行检索 ----
     function runSearch() {
+      const withHistory = !historyCb || historyCb.checked;
       const query = {
         province: provinceSel.value,
         city: citySel.value,
         district: districtSel.value,
         source: sourceSel.value,
         keyword: keywordInput.value.trim(),
+        // 历史归档（base_old）默认一起检索；取消勾选就只看当前有效网点
+        includeHistory: withHistory,
         // 已指定省级行政区时不再截断，有多少展示多少
         limit: provinceSel.value ? Number.MAX_SAFE_INTEGER : SEARCH_LIMIT,
       };
       const results = PODatabase.search(query);
       const total = PODatabase.count();
+      const historyTotal = PODatabase.historyCount();
 
       if (results.length === 0) {
         bodyEl.innerHTML = '';
@@ -530,18 +535,23 @@
         emptyEl.textContent = total === 0
           ? '暂无网点数据，请确保 base 目录有数据并重启应用'
           : '没有符合条件的网点';
-        metaEl.textContent = `网点总数 ${total} 条`;
+        metaEl.textContent = `网点总数 ${total} 条` + metaHistoryNote(historyTotal, withHistory);
         return;
       }
 
       let collectedCount = 0;
+      let historyCount = 0;
       const rows = results.map(r => {
         // 省 + 区县 + 名称 + 邮编 与已收集记录一致的 POST 网点，名称标绿
-        const hit = isCollected(r);
+        const hit = !r.historical && isCollected(r);
         if (hit) collectedCount++;
+        if (r.historical) historyCount++;
+        const badge = r.historical
+          ? `<span class="po-history" title="${esc(historyTitle(r))}">历史</span>`
+          : '';
         return `
-        <tr>
-          <td${hit ? ' class="po-collected" title="该网点已有收集记录"' : ''}>${esc(r.name)}</td>
+        <tr${r.historical ? ' class="po-history-row"' : ''}>
+          <td${hit ? ' class="po-collected" title="该网点已有收集记录"' : ''}>${esc(r.name)}${badge}</td>
           <td>${esc(r.province)}${r.city ? ' / ' + esc(r.city) : ''}${r.district ? ' / ' + esc(r.district) : ''}</td>
           <td>${r.postalCode ? esc(r.postalCode) : '-'}</td>
           <td><span class="tpo-src ${r.source}">${r.source === 'post' ? 'POST' : 'SPB'}</span></td>
@@ -551,8 +561,26 @@
       emptyEl.style.display = 'none';
       const limitNote = provinceSel.value ? '' : `（最多显示 ${SEARCH_LIMIT} 条）`;
       metaEl.textContent = `网点总数 ${total} 条，匹配 ${results.length} 条${limitNote}`
-        + (collectedCount > 0 ? `，其中 ${collectedCount} 条已收集` : '');
+        + (historyCount > 0 ? `，其中历史归档 ${historyCount} 条` : '')
+        + (collectedCount > 0 ? `，${collectedCount} 条已收集` : '')
+        + metaHistoryNote(historyTotal, withHistory);
       bodyEl.innerHTML = rows;
+    }
+
+    /** 历史归档的提示语（取消勾选时说明为什么看不到旧网点） */
+    function metaHistoryNote(historyTotal, withHistory) {
+      if (!historyTotal) return '';
+      return withHistory
+        ? `（含历史归档共 ${historyTotal} 条）`
+        : `（已排除历史归档 ${historyTotal} 条）`;
+    }
+
+    /** 历史记录徽标的悬浮说明：归档原因 + 归档时间 */
+    function historyTitle(r) {
+      const parts = ['历史归档（当前库中已无此网点）'];
+      if (r.archiveReason) parts.push('原因：' + r.archiveReason);
+      if (r.archiveDate) parts.push('归档于 ' + r.archiveDate);
+      return parts.join('，');
     }
 
     // ---- 事件绑定 ----
@@ -567,6 +595,7 @@
     });
     districtSel.addEventListener('change', runSearch);
     sourceSel.addEventListener('change', runSearch);
+    if (historyCb) historyCb.addEventListener('change', runSearch);
     keywordInput.addEventListener('input', () => {
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(runSearch, 200);
@@ -580,6 +609,7 @@
       districtSel.value = '';
       sourceSel.value = '';
       keywordInput.value = '';
+      if (historyCb) historyCb.checked = true;
       populateCities();
       populateDistricts();
       runSearch();
@@ -742,6 +772,8 @@
         province: provinceSel.value,
         city: citySel.value,
         district: districtSel.value,
+        // 随机网点只从当前有效网点里抽：归档里的已撤销/旧名称不该被抽中
+        includeHistory: false,
         limit: Number.MAX_SAFE_INTEGER,
       });
     }
