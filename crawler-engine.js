@@ -104,6 +104,25 @@ const SPB_FIELDS = ['所属省', '所属市', '所属县', '场所名称', '开�
 const RETRY_STATUS = new Set([429, 500, 502, 503, 504]);
 const MAX_ATTEMPTS = 5;
 
+// ===================== 邮管局省份并发 =====================
+// 只对「邮管局（SPB）省份任务」生效：同一省份内部仍按页串行。
+// 默认 2 是保守的工程参数，不代表邮管局官方允许的额度；上限 4 需实测后再考虑调整。
+const SPB_CONCURRENCY_DEFAULT = 2;
+const SPB_CONCURRENCY_MAX = 4;
+
+/**
+ * 归一化并发数。
+ * - 未提供 / 空串 / 非数字 → 默认值（旧调用方行为不变）
+ * - 其余取整后夹到 [1, SPB_CONCURRENCY_MAX]：0 或负数按 1（串行）处理
+ * 传 1 即退化为串行，方便与并发版本做对照测试。
+ */
+function normalizeSpbConcurrency(value) {
+  if (value === undefined || value === null || value === '') return SPB_CONCURRENCY_DEFAULT;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return SPB_CONCURRENCY_DEFAULT;
+  return Math.min(SPB_CONCURRENCY_MAX, Math.max(1, Math.floor(n)));
+}
+
 // ===================== 运行期配置（由 main.js 注入） =====================
 
 const config = {
@@ -180,6 +199,7 @@ function createJob(kind) {
     error: null,
     progress: null,         // { done, total, label } — 供前端画进度条
     controllers: new Set(), // 进行中的 fetch AbortController
+    stats: { retries: 0, gaveUp: 0 }, // 请求重试 / 放弃计数，作业收尾时汇总输出
   };
   jobs.set(job.id, job);
   return job;
@@ -191,6 +211,12 @@ function log(job, text) {
   job.lines.push(msg);
   job.cursor = job.lines.length;
   console.log('[Crawler] ' + msg);
+}
+
+/** 累加作业统计（供收尾时报告重试/放弃次数） */
+function bumpStat(job, key, n = 1) {
+  if (!job || !job.stats) return;
+  job.stats[key] = (job.stats[key] || 0) + n;
 }
 
 function checkCancelled(job) {
@@ -368,6 +394,7 @@ async function sessionFetch(session, job, url, options = {}, opts = {}) {
 
       if (RETRY_STATUS.has(res.status) && attempt < maxAttempts) {
         const wait = backoffMs(attempt);
+        bumpStat(job, 'retries');
         log(job, `    [重试 ${attempt}/${maxAttempts}] HTTP ${res.status}，${wait / 1000}s 后重试`);
         await sleep(wait, job);
         continue;
@@ -380,6 +407,7 @@ async function sessionFetch(session, job, url, options = {}, opts = {}) {
       lastError = e;
       if (attempt < maxAttempts) {
         const wait = backoffMs(attempt);
+        bumpStat(job, 'retries');
         log(job, `    [重试 ${attempt}/${maxAttempts}] ${e.message}，${wait / 1000}s 后重试`);
         await sleep(wait, job);
       }
@@ -390,9 +418,10 @@ async function sessionFetch(session, job, url, options = {}, opts = {}) {
 
 /**
  * 邮管局页面专用 GET：带异常处理与退避重试（对应 crawler.py 的 safe_get）。
+ * @param {string} [tag] 日志前缀（并发抓取时带上省份名，便于定位交错日志）
  * @returns {Promise<string|null>} 页面文本，失败返回 null
  */
-async function safeGet(session, job, url, maxAttempts = 3) {
+async function safeGet(session, job, url, maxAttempts = 3, tag = '') {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     checkCancelled(job);
     try {
@@ -405,11 +434,13 @@ async function safeGet(session, job, url, maxAttempts = 3) {
       return decodePage(buf);
     } catch (e) {
       if (job.cancelled) throw new CancelledError();
-      log(job, `    [重试 ${attempt}/${maxAttempts}] ${e.message}`);
+      bumpStat(job, 'retries');
+      log(job, `${tag}    [重试 ${attempt}/${maxAttempts}] ${e.message}`);
       if (attempt < maxAttempts) await sleep(Math.pow(2, attempt) * 1000, job);
     }
   }
-  log(job, `    [放弃] 多次重试后仍失败: ${url}`);
+  bumpStat(job, 'gaveUp');
+  log(job, `${tag}    [放弃] 多次重试后仍失败: ${url}`);
   return null;
 }
 
@@ -600,14 +631,14 @@ function extractHref(attrs) {
  * 对应 crawler.py 的 parse_spb_page，用正则替代 BeautifulSoup
  * （页面表格结构固定：<table><tr><td><a>…，已在真实页面上验证）。
  */
-function parseSpbPage(html, pageUrl, job) {
+function parseSpbPage(html, pageUrl, job, tag = '') {
   const rows = [];
   const trRe = /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi;
   let m;
   while ((m = trRe.exec(html)) !== null) rows.push(m[1]);
 
   if (rows.length === 0) {
-    log(job, `    [警告] 未找到表格数据: ${pageUrl}`);
+    log(job, `${tag}    [警告] 未找到表格数据: ${pageUrl}`);
     return [];
   }
 
@@ -645,8 +676,12 @@ function parseSpbPage(html, pageUrl, job) {
   return pageData;
 }
 
-/** 爬取指定省份邮管局备案所有页面数据 */
-async function crawlSpbProvince(session, job, areaCode) {
+/**
+ * 爬取指定省份邮管局备案所有页面数据。
+ * 省内分页保持串行；并发只发生在省份任务之间（见 startCrawl 的 worker pool）。
+ * @param {string} [tag] 日志前缀（带省份名，并发日志交错时便于定位）
+ */
+async function crawlSpbProvince(session, job, areaCode, tag = '') {
   const allData = [];
   let page = 1;
   let consecutiveEmpty = 0;
@@ -656,22 +691,22 @@ async function crawlSpbProvince(session, job, areaCode) {
     checkCancelled(job);
     const url = SPB_URL_TEMPLATE.replace('{}', areaCode).replace('{}', String(page));
 
-    const html = await safeGet(session, job, url);
+    const html = await safeGet(session, job, url, 3, tag);
     if (!html) {
       consecutiveEmpty++;
       if (consecutiveEmpty >= maxEmpty) {
-        log(job, `    邮管局: 连续${maxEmpty}页失败，停止抓取`);
+        log(job, `${tag}    邮管局: 连续${maxEmpty}页失败，停止抓取`);
         break;
       }
       page++;
       continue;
     }
 
-    const pageData = parseSpbPage(html, url, job);
+    const pageData = parseSpbPage(html, url, job, tag);
     if (pageData.length === 0) {
       consecutiveEmpty++;
       if (consecutiveEmpty >= maxEmpty) {
-        log(job, `    邮管局: 连续${maxEmpty}页无数据，停止抓取`);
+        log(job, `${tag}    邮管局: 连续${maxEmpty}页无数据，停止抓取`);
         break;
       }
     } else {
@@ -683,7 +718,7 @@ async function crawlSpbProvince(session, job, areaCode) {
     await sleep(300, job);          // 礼貌性延迟
   }
 
-  log(job, `    邮管局: 共获取 ${allData.length} 条记录`);
+  log(job, `${tag}    邮管局: 共获取 ${allData.length} 条记录`);
   return allData;
 }
 
@@ -875,60 +910,68 @@ function humanTime(d = new Date()) {
 
 // ===================== 功能①：爬取数据 =====================
 
-/** 单省爬取（对应 crawl_one_province） */
-async function crawlOneProvince(job, provinceName, abbr, areaCode, dateStrVal,
-                                outputDir, doPost, doSpb, delaySec) {
+/**
+ * 单省 · 邮政官网抓取（对应原 crawlOneProvince 的 POST 段）。
+ * 始终串行调度，请求节奏与改造前一致；session 由本任务独占。
+ */
+async function crawlPostProvinceTask(job, prov, dateStrVal, outputDir) {
   const session = createSession();
-  let postCount = 0;
-  let spbCount = 0;
-  let postFile = null;
-  let spbFile = null;
-
-  if (doPost) {
-    log(job, '  >> 抓取邮政官网数据...');
-    try {
-      const postData = await crawlPostProvince(session, job, provinceName);
-      if (postData.length > 0) {
-        postFile = savePostCsv(job, postData, abbr, dateStrVal, outputDir);
-        postCount = postData.length;
-      } else {
-        log(job, '    [提示] 邮政官网无数据');
-      }
-    } catch (e) {
-      if (e instanceof CancelledError) throw e;
-      log(job, `    [错误] 邮政官网爬取异常: ${e.message}`);
-    }
-    await sleep(delaySec * 1000, job);
+  try {
     checkCancelled(job);
-  }
-
-  if (doSpb) {
-    log(job, '  >> 抓取邮管局备案数据...');
-    try {
-      const spbData = await crawlSpbProvince(session, job, areaCode);
-      if (spbData.length > 0) {
-        spbFile = saveSpbCsv(job, spbData, abbr, dateStrVal, outputDir);
-        spbCount = spbData.length;
-      } else {
-        log(job, '    [提示] 邮管局无数据');
-      }
-    } catch (e) {
-      if (e instanceof CancelledError) throw e;
-      log(job, `    [错误] 邮管局爬取异常: ${e.message}`);
+    log(job, '  >> 抓取邮政官网数据...');
+    const postData = await crawlPostProvince(session, job, prov.name);
+    if (postData.length === 0) {
+      log(job, '    [提示] 邮政官网无数据');
+      return { postCount: 0, postFile: null };
     }
+    const postFile = savePostCsv(job, postData, prov.abbr, dateStrVal, outputDir);
+    return { postCount: postData.length, postFile };
+  } catch (e) {
+    if (e instanceof CancelledError || job.cancelled) throw new CancelledError();
+    log(job, `    [错误] 邮政官网爬取异常: ${e.message}`);
+    return { postCount: 0, postFile: null };
   }
+}
 
-  return { postCount, spbCount, postFile, spbFile };
+/**
+ * 单省 · 邮管局抓取（对应原 crawlOneProvince 的 SPB 段）。
+ * 这是并发池的调度单位：每省一个独立会话，省内分页仍串行。
+ */
+async function crawlSpbProvinceTask(job, prov, dateStrVal, outputDir) {
+  const session = createSession();
+  const tag = `[${prov.name}/${prov.abbr}] `;
+  try {
+    checkCancelled(job);
+    log(job, `${tag}>> 抓取邮管局备案数据...`);
+    const spbData = await crawlSpbProvince(session, job, prov.code, tag);
+    if (spbData.length === 0) {
+      log(job, `${tag}    [提示] 邮管局无数据`);
+      return { spbCount: 0, spbFile: null };
+    }
+    const spbFile = saveSpbCsv(job, spbData, prov.abbr, dateStrVal, outputDir);
+    return { spbCount: spbData.length, spbFile };
+  } catch (e) {
+    if (e instanceof CancelledError || job.cancelled) throw new CancelledError();
+    log(job, `${tag}    [错误] 邮管局爬取异常: ${e.message}`);
+    return { spbCount: 0, spbFile: null };
+  }
 }
 
 /**
  * 爬取作业入口。
+ *
+ * 调度分两个阶段（并发只作用于邮管局，邮政官网始终保持原有串行节奏）：
+ *   阶段 1  POST：逐省串行，省间沿用 interDelay；
+ *   阶段 2  SPB ：有界 worker pool（spbConcurrency 个 worker），每省独占会话，
+ *                 省内分页仍按页串行。只有 doPost=false 时才会退化成单阶段。
+ *
  * @param {object} opts
  * @param {string[]} opts.provinces  省份短名数组（如 ['上海','北京']）
  * @param {boolean}  opts.doPost     是否爬邮政官网
  * @param {boolean}  opts.doSpb      是否爬邮管局
  * @param {number}   opts.delay      源间延迟（秒）
  * @param {number}   opts.interDelay 省间延迟（秒）
+ * @param {number}   [opts.spbConcurrency] 邮管局省份并发数（默认 2，范围 1~4；1 = 串行）
  */
 function startCrawl(opts = {}) {
   const wanted = Array.isArray(opts.provinces) && opts.provinces.length
@@ -938,6 +981,7 @@ function startCrawl(opts = {}) {
   const doSpb = opts.doSpb !== false;
   const delay = Number.isFinite(+opts.delay) ? +opts.delay : 1.0;
   const interDelay = Number.isFinite(+opts.interDelay) ? +opts.interDelay : 2.0;
+  const spbConcurrency = normalizeSpbConcurrency(opts.spbConcurrency);
 
   return runJob('crawl', async (job) => {
     const startTime = Date.now();
@@ -950,45 +994,121 @@ function startCrawl(opts = {}) {
     log(job, '='.repeat(60));
     log(job, `输出目录: ${outputDir}`);
     log(job, `数据来源: ${doPost ? '邮政官网 ' : ''}${doSpb ? '邮管局' : ''}`);
-    log(job, `省份数量: ${wanted.length}`);
     log(job, `请求间隔: ${delay}s (省间 ${interDelay}s)`);
-    log(job, '-'.repeat(60));
 
-    const results = [];
-    let okCount = 0;
-
-    for (let i = 0; i < wanted.length; i++) {
-      checkCancelled(job);
-      const name = wanted[i];
+    // ---- 省份校验：未知省份只记日志、不进队列；重复省份只跑一次 ----
+    // 重复省份若都进队列，两个 worker 会同时写同一个 spb<abbr>-<date>.csv，
+    // 文件内容会互相覆盖，因此在这里先去重（进度条也不用为此留空位）。
+    const tasks = [];
+    const seen = new Set();
+    for (const name of wanted) {
       const prov = PROVINCES.find(p => p.name === name);
       if (!prov) {
         log(job, `[跳过] 未知省份: ${name}`);
         continue;
       }
+      if (seen.has(prov.name)) {
+        log(job, `[跳过] 重复省份: ${name}`);
+        continue;
+      }
+      seen.add(prov.name);
+      tasks.push(prov);
+    }
+    const total = tasks.length;
+    log(job, `省份数量: ${total}`);
 
-      log(job, '');
-      log(job, `[${i + 1}/${wanted.length}] ${prov.name} (${prov.abbr})`);
-      job.progress = { done: i, total: wanted.length, label: prov.name };
+    // 结果槽位按输入顺序预留：完成后直接填槽，输出顺序不受网络快慢影响
+    const results = tasks.map(prov => ({
+      province: prov.name,
+      abbr: prov.abbr,
+      postCount: 0,
+      spbCount: 0,
+      postFile: null,
+      spbFile: null,
+    }));
 
-      const r = await crawlOneProvince(
-        job, prov.name, prov.abbr, prov.code, today, outputDir, doPost, doSpb, delay
+    // done 只按「已完成处理的省份」计数，不再使用循环下标（并发完成顺序不固定）
+    let done = 0;
+    const setProgress = (label) => {
+      job.progress = { done, total, label: label || '' };
+    };
+    const finishProvince = (prov) => {
+      done++;
+      setProgress(prov.name);
+    };
+    setProgress('');            // 首个状态轮询就能看到正确的分母
+
+    log(job, '-'.repeat(60));
+
+    // ---- 阶段 1：邮政官网（串行，保留原节奏） ----
+    if (doPost && total > 0) {
+      log(job, doSpb ? '[阶段 1/2] 邮政官网抓取（串行）' : '[抓取] 邮政官网（串行）');
+      for (let i = 0; i < total; i++) {
+        checkCancelled(job);
+        const prov = tasks[i];
+        log(job, '');
+        log(job, `[${i + 1}/${total}] ${prov.name} (${prov.abbr})`);
+        setProgress(prov.name);
+
+        Object.assign(results[i], await crawlPostProvinceTask(job, prov, today, outputDir));
+        if (!doSpb) finishProvince(prov);
+
+        if (i < total - 1) await sleep(interDelay * 1000, job);
+      }
+    }
+
+    // ---- 阶段 2：邮管局（有界 worker pool） ----
+    let effectiveConcurrency = 0;
+    if (doSpb && total > 0) {
+      effectiveConcurrency = Math.min(spbConcurrency, total);
+      log(job, doPost ? '[阶段 2/2] 邮管局抓取（省份并发）' : '[抓取] 邮管局（省份并发）');
+      log(job, `  实际生效并发数: ${effectiveConcurrency}（配置 ${spbConcurrency}，上限 ${SPB_CONCURRENCY_MAX}）`);
+      log(job, '  提示: 并发仅作用于省份任务，单个省份内部仍按页串行请求');
+
+      // 两个阶段之间保留「源间间隔」，对应原流程 POST → SPB 之间的停顿
+      if (doPost && delay > 0) await sleep(delay * 1000, job);
+
+      let next = 0;
+      const worker = async () => {
+        while (!job.cancelled) {
+          const i = next++;
+          if (i >= total) return;
+
+          const prov = tasks[i];
+          // 已取消时不再领新省份；已领到的任务由 fetch 的 AbortController 中断
+          checkCancelled(job);
+
+          log(job, '');
+          log(job, `[${i + 1}/${total}] ${prov.name} (${prov.abbr})`);
+          setProgress(prov.name);
+
+          Object.assign(results[i], await crawlSpbProvinceTask(job, prov, today, outputDir));
+          finishProvince(prov);
+
+          if (i < total - 1) await sleep(interDelay * 1000, job);
+        }
+      };
+
+      // 等所有 worker 退出后再收尾：取消时不能留下仍在写文件的后台任务
+      const settled = await Promise.allSettled(
+        Array.from({ length: effectiveConcurrency }, () => worker())
       );
-
-      if (r.postCount > 0 || r.spbCount > 0) okCount++;
-      results.push(Object.assign({ province: prov.name, abbr: prov.abbr }, r));
-      job.progress = { done: i + 1, total: wanted.length, label: prov.name };
-
-      if (i < wanted.length - 1) await sleep(interDelay * 1000, job);
+      checkCancelled(job);
+      const failure = settled.find(s => s.status === 'rejected');
+      if (failure) throw failure.reason;
     }
 
     const totalPost = results.reduce((s, r) => s + r.postCount, 0);
     const totalSpb = results.reduce((s, r) => s + r.spbCount, 0);
+    const okCount = results.filter(r => r.postCount > 0 || r.spbCount > 0).length;
 
     log(job, '');
     log(job, '='.repeat(60));
-    log(job, `爬取完成: ${okCount}/${wanted.length} 个省份有数据`);
+    log(job, `爬取完成: ${okCount}/${total} 个省份有数据`);
     log(job, `邮政官网合计: ${totalPost} 条`);
     log(job, `邮管局合计  : ${totalSpb} 条`);
+    if (doSpb) log(job, `邮管局并发  : ${effectiveConcurrency}`);
+    log(job, `请求统计    : 重试 ${job.stats.retries} 次，放弃 ${job.stats.gaveUp} 次`);
     log(job, `耗时: ${((Date.now() - startTime) / 1000).toFixed(1)}s`);
     log(job, '='.repeat(60));
 
@@ -999,7 +1119,8 @@ function startCrawl(opts = {}) {
       totalPost,
       totalSpb,
       okCount,
-      provinceCount: wanted.length,
+      provinceCount: total,
+      spbConcurrency: effectiveConcurrency,
       files: results.flatMap(r => [r.postFile, r.spbFile]).filter(Boolean),
     };
   });
@@ -1053,6 +1174,49 @@ function recordKey(source, r) {
 /** 名称里是否带「（撤销）」标记 —— 撤销的网点不再进当前库 */
 function isRevoked(r) {
   return Intelligent.extractStatus(r && r.name).statuses.indexOf('已撤销') >= 0;
+}
+
+/** 名称里是否带「撤销」字样（宽口径，不要求带括号：含「已撤销」等写法） */
+function hasRevokedMark(r) {
+  return /撤销/.test(String((r && r.name) || ''));
+}
+
+/**
+ * base_old 查表键：来源 + 属地 + 名称（去掉「（撤销）」「（暂停）」等状态括注）。
+ *
+ * 归档里存的名称可能带状态标记，而 output 里同一条记录可能只有其中一种形态
+ * （例如归档是「XX（撤销）」、output 是「XX」；或反过来），所以先剥掉状态括注再比。
+ * 只用于「是否已在历史库」判断，不替代 recordKey（后者仍是精确身份键，
+ * 决定归档记录是否因重新出现而移出）。
+ */
+function archivedLookupKey(source, r) {
+  // extractStatus 只认「（撤销）」；这里再兼容「（已撤销）」「（ 撤销 ）」等写法
+  const cleanName = Intelligent.extractStatus(r && r.name).clean
+    .replace(/[（(]\s*(?:已)?撤销\s*[）)]/g, '')
+    .trim();
+  return [source, r && r.province, r && r.city, r && r.district, cleanName]
+    .map((s) => String(s == null ? '' : s).trim()).join('\u0001');
+}
+
+/**
+ * 构造「不算新增」过滤器：带「撤销」字样、且已在 base_old 历史库中的 output 记录。
+ *
+ * 这类记录本来就该归档、不会进当前库，但智能判别是把 output 与 base 逐条比，
+ * base 里没有它们，于是每次都算成疑似新增网点。按需求把它们从「新增」统计中剔除。
+ *
+ * @param {'post'|'spb'} sourceType
+ * @param {object[]} archiveEntries readBaseOld() 的结果
+ * @returns {(r: object) => boolean}
+ */
+function makeArchivedRevokedFilter(sourceType, archiveEntries) {
+  const keys = new Set();
+  for (const e of archiveEntries || []) {
+    // 只收集同来源的归档：POST 与 SPB 的属地/名称可能撞车，不能交叉匹配
+    if (String(e.source || '') !== sourceType) continue;
+    keys.add(archivedLookupKey(sourceType, e));
+  }
+  if (keys.size === 0) return () => false;
+  return (r) => hasRevokedMark(r) && keys.has(archivedLookupKey(sourceType, r));
 }
 
 /** 统一归档字段：把 POST / SPB 的字段差异抹平成一行的「专属列」 */
@@ -1311,6 +1475,9 @@ function startCompare() {
     const intelligentSections = [];
     const intelligent = [];          // 结构化明细，供面板②弹窗渲染
 
+    // 历史归档（base_old）里的「撤销」记录不再算新增网点，见 makeArchivedRevokedFilter
+    const archiveEntries = readBaseOld(baseOldPath());
+
     log(job, '');
     log(job, '  正在执行智能判别分析...');
     log(job, '  ' + '-'.repeat(50));
@@ -1328,7 +1495,11 @@ function startCompare() {
         const records1 = read(path.join(outputDir, outFile));
         const records2 = read(path.join(baseDir, baseFile));
 
-        const res = Intelligent.intelligentCompare(records1, records2, sourceType, outFile);
+        // 「带撤销字样 + 已在 base_old」的记录不计入新增网点
+        const ignoreNew = makeArchivedRevokedFilter(sourceType, archiveEntries);
+        const res = Intelligent.intelligentCompare(
+          records1, records2, sourceType, outFile, { ignoreNew }
+        );
 
         intelligentSections.push('');
         intelligentSections.push(...res.lines);
@@ -1337,13 +1508,16 @@ function startCompare() {
           sourceType,
           newCount: res.newCount,
           oldCount: res.oldCount,
+          ignoredNew: res.ignoredNew || 0,   // 已归档撤销、不计入新增的条数
           summary: res.summary,
           changes: res.changes,
           unmatched1: res.unmatched1,
           unmatched2: res.unmatched2,
           blocks: res.blocks,
         });
-        log(job, `    智能分析: ${prefix} ... 完成`);
+        const ignoredNew = res.ignoredNew || 0;
+        log(job, `    智能分析: ${prefix} ... 完成` +
+          (ignoredNew ? `（已归档撤销 ${ignoredNew} 条不计新增）` : ''));
       } catch (e) {
         log(job, `    智能分析: ${prefix} ... 失败: ${e.message}`);
         intelligentSections.push('');
@@ -2224,6 +2398,9 @@ module.exports = {
   BASE_OLD_FILE,
   BASE_OLD_FIELDS,
   ARCHIVE_REASON,
+  SPB_CONCURRENCY_DEFAULT,
+  SPB_CONCURRENCY_MAX,
+  normalizeSpbConcurrency,
   configure,
   resolveCompareExe,
   getStatus,
@@ -2249,6 +2426,9 @@ module.exports = {
   readBaseOld,
   writeBaseOld,
   isRevoked,
+  hasRevokedMark,
+  archivedLookupKey,
+  makeArchivedRevokedFilter,
   recordKey,
   computeBaseUpdate,
   writeBaseSnapshot,

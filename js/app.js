@@ -97,14 +97,24 @@
   // ============================================================
   // 刷新所有视图
   // ============================================================
-  function refreshAllViews() {
+  /**
+   * 只刷新统计面板。
+   * 排名表的「总计」取自参考库里的邮政官网网点数，参考库一变就要重算；
+   * 地图着色只看已收集数量，与网点总数无关，因此这里不动地图。
+   */
+  function refreshStatsOnly() {
     const level = MapView.getCurrentLevel();
     if (level === 'province') {
       StatsView.update('nation', null);
     } else {
       StatsView.update('city', MapView.getCurrentProvince());
     }
+  }
+
+  function refreshAllViews() {
+    refreshStatsOnly();
     // 重新渲染地图
+    const level = MapView.getCurrentLevel();
     if (level === 'province') {
       MapView.backToNation();
     } else {
@@ -156,11 +166,13 @@
   let crawlerPageOpen = false;
   let mailPageOpen = false;
   let meterPageOpen = false;
+  let galleryPageOpen = false;
   const toolsPage = $('tools-page');
   const poSearchPage = $('po-search-page');
   const crawlerPage = $('crawler-page');
   const mailPage = $('mail-page');
   const meterPage = $('meter-page');
+  const galleryPage = $('gallery-page');
   const mailPageTitle = $('mail-page-title');
   const mailPlaceholderTitle = $('mail-placeholder-title');
   const mailPlaceholderCard = $('mail-placeholder-card');
@@ -200,6 +212,7 @@
     if (crawlerPageOpen) hideCrawlerPage();
     if (mailPageOpen) hideMailPage();
     if (meterPageOpen) hideMeterPage();
+    if (galleryPageOpen) hideGalleryPage();
     // 隐藏主视图，显示记录页
     $('main-container').style.display = 'none';
     $('btn-add-record-fab').style.display = 'none';
@@ -536,6 +549,7 @@
     if (crawlerPageOpen) hideCrawlerPage();
     if (mailPageOpen) hideMailPage();
     if (meterPageOpen) hideMeterPage();
+    if (galleryPageOpen) hideGalleryPage();
     $('main-container').style.display = 'none';
     $('btn-add-record-fab').style.display = 'none';
     toolsPage.style.display = 'flex';
@@ -565,6 +579,7 @@
     if (crawlerPageOpen) hideCrawlerPage();
     if (mailPageOpen) hideMailPage();
     if (meterPageOpen) hideMeterPage();
+    if (galleryPageOpen) hideGalleryPage();
     $('main-container').style.display = 'none';
     $('btn-add-record-fab').style.display = 'none';
     poSearchPage.style.display = 'flex';
@@ -594,6 +609,7 @@
     if (poSearchPageOpen) hidePOSearchPage();
     if (mailPageOpen) hideMailPage();
     if (meterPageOpen) hideMeterPage();
+    if (galleryPageOpen) hideGalleryPage();
     $('main-container').style.display = 'none';
     $('btn-add-record-fab').style.display = 'none';
     crawlerPage.style.display = 'flex';
@@ -644,6 +660,38 @@
   $('btn-meter-back').addEventListener('click', hideMeterPage);
 
   // ============================================================
+  // 邮戳图片页面（照片画廊）
+  // ============================================================
+  function showGalleryPage() {
+    galleryPageOpen = true;
+    if (recordsPageOpen) hideRecordsPage();
+    if (toolsPageOpen) hideToolsPage();
+    if (poSearchPageOpen) hidePOSearchPage();
+    if (crawlerPageOpen) hideCrawlerPage();
+    if (mailPageOpen) hideMailPage();
+    if (meterPageOpen) hideMeterPage();
+    $('main-container').style.display = 'none';
+    $('btn-add-record-fab').style.display = 'none';
+    galleryPage.style.display = 'flex';
+    // 图片来自日戳记录，进入页面时按最新记录重建画廊
+    if (typeof GalleryPage !== 'undefined') GalleryPage.show();
+    setActiveNav('gallery');
+  }
+
+  function hideGalleryPage() {
+    galleryPageOpen = false;
+    galleryPage.style.display = 'none';
+    $('main-container').style.display = '';
+    $('btn-add-record-fab').style.display = '';
+    // 详情是 fixed 遮罩，离开页面时必须一起收起，否则会锁住滚动
+    if (typeof GalleryPage !== 'undefined') GalleryPage.closeDetail();
+    setActiveNav('overview');
+  }
+
+  $('btn-show-gallery').addEventListener('click', showGalleryPage);
+  $('btn-gallery-back').addEventListener('click', hideGalleryPage);
+
+  // ============================================================
   // 地图总览页面（侧边栏第一项）
   // ============================================================
   function showOverviewPage() {
@@ -653,6 +701,7 @@
     if (crawlerPageOpen) hideCrawlerPage();
     if (mailPageOpen) hideMailPage();
     if (meterPageOpen) hideMeterPage();
+    if (galleryPageOpen) hideGalleryPage();
     // 收起动作会把主视图恢复回来，这里再统一亮一次总览
     $('main-container').style.display = '';
     $('btn-add-record-fab').style.display = '';
@@ -691,6 +740,7 @@
     if (poSearchPageOpen) hidePOSearchPage();
     if (crawlerPageOpen) hideCrawlerPage();
     if (meterPageOpen) hideMeterPage();
+    if (galleryPageOpen) hideGalleryPage();
     $('main-container').style.display = 'none';
     $('btn-add-record-fab').style.display = 'none';
 
@@ -804,12 +854,17 @@
       if (window.ReturnList && window.ReturnList.closeForm()) return;
       // 邮资机戳同理
       if (window.MeterList && window.MeterList.closeForm()) return;
+      // 网点详情叠在「网点检索」页之上
+      if (window.Tools && window.Tools.closePODetail()) return;
+      // 邮戳图片详情叠在画廊页之上
+      if (window.GalleryPage && window.GalleryPage.closeDetail()) return;
       if (batchModalOpen) closeBatchModal();
       else if (toolsPageOpen) hideToolsPage();
       else if (poSearchPageOpen) hidePOSearchPage();
       else if (crawlerPageOpen) hideCrawlerPage();
       else if (mailPageOpen) hideMailPage();
       else if (meterPageOpen) hideMeterPage();
+      else if (galleryPageOpen) hideGalleryPage();
       else if (recordsPageOpen) hideRecordsPage();
     }
   });
@@ -1143,6 +1198,9 @@
 
   // 启动时自动导入 base 目录网点数据，完成后弹窗提示
   importBaseData().then(async (result) => {
+    // 参考库已更新 → 排名表的「总计」（邮政官网网点数）跟着重算
+    refreshStatsOnly();
+
     const stats = PODatabase.getStats();
     const postCount = stats.provinces.reduce((s, p) => s + p.postCount, 0);
     const spbCount = stats.provinces.reduce((s, p) => s + p.spbCount, 0);

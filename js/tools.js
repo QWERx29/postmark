@@ -457,6 +457,144 @@
   /** 未指定省级行政区时的展示上限；指定省份后不再截断 */
   const SEARCH_LIMIT = 200;
 
+  // ---- 网点详情弹窗用的模块级小工具 ----
+
+  /** 文本转义（只转 & < >；要进属性时用 escAttrText 再转引号） */
+  function escText(s) {
+    const d = document.createElement('div');
+    d.textContent = s == null ? '' : String(s);
+    return d.innerHTML;
+  }
+
+  function escAttrText(s) {
+    return escText(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  /** 盖销日期显示：兼容 10 位整数 YYYYMMDDHH 与旧格式 YYYY.MM.DD.HH */
+  function fmtCancelDateText(val) {
+    if (!val) return '';
+    const s = String(val);
+    if (/^\d{10}$/.test(s)) {
+      return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)} ${s.slice(8, 10)}:00`;
+    }
+    if (/^\d{4}\.\d{2}\.\d{2}\.\d{2}$/.test(s)) {
+      return s.replace(/\./g, '-').replace(/-(\d{2})$/, ' $1:00');
+    }
+    return s;
+  }
+
+  /**
+   * 找出与参考库网点对应的已收集记录。
+   * 匹配口径与表格里的绿色高亮一致（见 collectedKey），且只认 POST、不认历史归档。
+   */
+  function findCollectedRecords(po) {
+    if (!po || po.source !== 'post' || po.historical) return [];
+    if (typeof RecordStore === 'undefined') return [];
+    const key = collectedKey(po);
+    return RecordStore.getAll().filter((rec) => collectedKey({
+      province: rec.province,
+      district: rec.district,
+      name: rec.postOffice,
+      postalCode: rec.postalCode,
+    }) === key);
+  }
+
+  let poDetailOpen = false;
+
+  /** 打开网点详情：地址、开办业务、详情链接、历史归档与收集情况 */
+  function openPODetail(rec) {
+    const overlay = $('po-detail-overlay');
+    if (!overlay || !rec) return;
+
+    const titleEl = $('po-detail-title');
+    const headEl = $('po-detail-head');
+    const listEl = $('po-detail-list');
+
+    if (titleEl) titleEl.textContent = '网点详情';
+
+    const sourceLabel = rec.source === 'post' ? 'POST（邮政官网）' : 'SPB（邮管局）';
+    const collected = findCollectedRecords(rec);
+
+    if (headEl) {
+      const badges = [`<span class="tpo-src ${rec.source}">${escText(sourceLabel)}</span>`];
+      if (rec.historical) {
+        const tip = ['历史归档（当前库中已无此网点）'];
+        if (rec.archiveReason) tip.push('原因：' + rec.archiveReason);
+        if (rec.archiveDate) tip.push('归档于 ' + rec.archiveDate);
+        badges.push(`<span class="po-history" title="${escAttrText(tip.join('，'))}">历史归档</span>`);
+      }
+      if (collected.length) badges.push('<span class="po-detail-badge-ok">已收集</span>');
+      headEl.innerHTML = `<div class="po-detail-name">${escText(rec.name) || '(无名称)'}</div>`
+        + `<div class="po-detail-badges">${badges.join('')}</div>`;
+    }
+
+    if (!listEl) return;
+
+    function row(label, value, placeholder) {
+      const text = value == null ? '' : String(value).trim();
+      return `<div class="po-detail-line">`
+        + `<span class="po-detail-label">${escText(label)}</span>`
+        + `<span class="po-detail-value${text ? '' : ' po-detail-empty'}">`
+        + `${escText(text || placeholder || '-')}</span></div>`;
+    }
+
+    const rows = [];
+    rows.push(row('所在地', [rec.province, rec.city, rec.district].filter(Boolean).join(' / ')));
+    rows.push(row('邮政编码', rec.postalCode));
+    rows.push(row('地址', rec.address,
+      rec.source === 'spb'
+        ? 'SPB 数据源不含地址，可点下方详情链接查看邮管局备案信息'
+        : '参考库未记录该网点的地址'));
+    rows.push(row('开办业务', rec.services, '参考库未记录开办业务'));
+
+    if (/^https?:\/\//i.test(String(rec.detailLink || ''))) {
+      rows.push(`<div class="po-detail-line">`
+        + `<span class="po-detail-label">详情链接</span>`
+        + `<span class="po-detail-value"><a class="po-detail-link" href="${escAttrText(rec.detailLink)}"`
+        + ` target="_blank" rel="noopener noreferrer">在邮管局网站查看</a></span></div>`);
+    }
+
+    if (rec.source === 'post' && !rec.historical) {
+      if (collected.length) {
+        const first = collected[0];
+        const bits = [];
+        if (first.institutionCode) bits.push('机构号 ' + first.institutionCode);
+        const date = fmtCancelDateText(first.cancelDate);
+        if (date) bits.push('盖销 ' + date);
+        if (Array.isArray(first.stampNumbers) && first.stampNumbers.length) {
+          bits.push('戳号 ' + first.stampNumbers.join(', '));
+        }
+        const more = collected.length > 1 ? `（共 ${collected.length} 条收集记录）` : '';
+        rows.push(row('收集记录', (bits.join(' · ') || '已收集') + more));
+      } else {
+        rows.push(row('收集记录', '', '尚无收集记录'));
+      }
+    } else if (rec.source === 'spb') {
+      rows.push(row('收集记录', '', 'SPB 网点不参与「已收集」匹配'));
+    }
+
+    if (rec.historical) {
+      rows.push(row('归档原因', rec.archiveReason, '未记录'));
+      rows.push(row('归档时间', rec.archiveDate, '未记录'));
+    }
+
+    listEl.innerHTML = rows.join('');
+
+    poDetailOpen = true;
+    overlay.classList.add('active');
+    document.body.style.overflow = 'hidden';
+  }
+
+  /** @returns {boolean} 是否真的关掉了一个打开中的网点详情弹窗（供 Esc 处理判断） */
+  function closePODetail() {
+    if (!poDetailOpen) return false;
+    poDetailOpen = false;
+    const overlay = $('po-detail-overlay');
+    if (overlay) overlay.classList.remove('active');
+    document.body.style.overflow = '';
+    return true;
+  }
+
   function initPOSearchTool() {
     const provinceSel = $('tool-po-search-province');
     const citySel = $('tool-po-search-city');
@@ -472,6 +610,8 @@
     if (!provinceSel) return;
 
     let debounceTimer = null;
+    /** 当前表格里的结果，点击「网点名称」时按 data-idx 取（避免把整条记录塞进 DOM） */
+    let lastResults = [];
 
     function esc(s) {
       const d = document.createElement('div');
@@ -530,6 +670,7 @@
       const historyTotal = PODatabase.historyCount();
 
       if (results.length === 0) {
+        lastResults = [];
         bodyEl.innerHTML = '';
         emptyEl.style.display = 'block';
         emptyEl.textContent = total === 0
@@ -539,9 +680,10 @@
         return;
       }
 
+      lastResults = results;
       let collectedCount = 0;
       let historyCount = 0;
-      const rows = results.map(r => {
+      const rows = results.map((r, idx) => {
         // 省 + 区县 + 名称 + 邮编 与已收集记录一致的 POST 网点，名称标绿
         const hit = !r.historical && isCollected(r);
         if (hit) collectedCount++;
@@ -551,7 +693,10 @@
           : '';
         return `
         <tr${r.historical ? ' class="po-history-row"' : ''}>
-          <td${hit ? ' class="po-collected" title="该网点已有收集记录"' : ''}>${esc(r.name)}${badge}</td>
+          <td${hit ? ' class="po-collected"' : ''}>
+            <button type="button" class="po-name-btn" data-idx="${idx}"
+                    title="单击查看该网点的详细信息（地址 / 开办业务 / 归档情况等）">${esc(r.name)}</button>${badge}
+          </td>
           <td>${esc(r.province)}${r.city ? ' / ' + esc(r.city) : ''}${r.district ? ' / ' + esc(r.district) : ''}</td>
           <td>${r.postalCode ? esc(r.postalCode) : '-'}</td>
           <td><span class="tpo-src ${r.source}">${r.source === 'post' ? 'POST' : 'SPB'}</span></td>
@@ -614,6 +759,26 @@
       populateDistricts();
       runSearch();
     });
+
+    // 单击「网点名称」→ 弹出该网点的详细信息
+    bodyEl.addEventListener('click', (e) => {
+      const btn = e.target.closest('.po-name-btn');
+      if (!btn) return;
+      const rec = lastResults[Number(btn.dataset.idx)];
+      if (rec) openPODetail(rec);
+    });
+
+    // 详情弹窗的关闭入口（× / 关闭按钮 / 点遮罩）
+    const detailOverlay = $('po-detail-overlay');
+    if (detailOverlay) {
+      const closeBtn = $('po-detail-close');
+      const okBtn = $('po-detail-ok');
+      if (closeBtn) closeBtn.addEventListener('click', closePODetail);
+      if (okBtn) okBtn.addEventListener('click', closePODetail);
+      detailOverlay.addEventListener('click', (e) => {
+        if (e.target === detailOverlay) closePODetail();
+      });
+    }
 
     // ---- 刷新（重建筛选下拉，尽量保留当前选择） ----
     function refresh() {
@@ -843,6 +1008,7 @@
   window.Tools = {
     refreshPOSearch: () => refreshPOSearch(),
     refreshRandomPO: () => refreshRandomPO(),
+    closePODetail: () => closePODetail(),
   };
 
   // DOM 就绪后初始化

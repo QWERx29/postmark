@@ -578,14 +578,14 @@ function testIntelligentBlock(Page) {
 
   // 干净的一对：不该在任何表格里出现
   const clean = {
-    prefix: 'spbbj', sourceType: 'spb', newCount: 5, oldCount: 5,
+    prefix: 'spbbj', sourceType: 'spb', newCount: 5, oldCount: 5, ignoredNew: 0,
     summary: { byCategory: {}, new: 0, removed: 0, blocks: 0, comprehensive: 0 },
     changes: [], unmatched1: [], unmatched2: [], blocks: [],
   };
 
   // 有差异的一对：名称 / 邮编 / 综合变化 + 疑似新增 + 区块
   const dirty = {
-    prefix: 'postbj', sourceType: 'post', newCount: 4, oldCount: 3,
+    prefix: 'postbj', sourceType: 'post', newCount: 4, oldCount: 3, ignoredNew: 1,
     summary: {
       byCategory: { '名称变化': 1, '邮编变化': 1, '区划变化(市)': 1 },
       new: 1, removed: 0, blocks: 1, comprehensive: 1,
@@ -662,7 +662,8 @@ function testIntelligentBlock(Page) {
     cards.some((c) => c.textContent === '1名称变化') &&
     cards.some((c) => c.textContent === '1区划变化') &&
     cards.some((c) => c.textContent === '1疑似新增') &&
-    cards.some((c) => c.textContent === '1连续变化区块'), cardText);
+    cards.some((c) => c.textContent === '1连续变化区块') &&
+    cards.some((c) => c.textContent === '1已归档撤销(不计新增)'), cardText);
   check('无差异时不出现「完全一致」卡片', !/两份数据完全一致/.test(cardText), cardText);
 
   // 未选择时：只有概览，详情容器是空的
@@ -717,6 +718,7 @@ function testIntelligentBlock(Page) {
   check('匹配方式中文化（exact→精确）', allText.includes('精确'), '');
   check('区划变化类型标注为地市变化', allText.includes('地市变化'), '');
   check('区块判断语已展示', allText.includes('疑似1个新增'), '');
+  check('明细说明已归档撤销不计新增', allText.includes('已在 base_old 历史库中'), '');
 
   // XSS：所有外部数据只做文本，绝不生成 DOM 节点
   eq('网点名中的 <img> 未变成节点', findAll(postDetail, 'img').length, 0);

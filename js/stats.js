@@ -132,10 +132,39 @@ const StatsView = (function () {
   }
 
   // ============================================================
+  // 右下角「数据更新」— 参考库最后一次刷新的日期
+  // ============================================================
+  /**
+   * 这个日期跟着参考库走（poref_meta.lastImportTime），不再写死在页面里：
+   * 启动时从 base/ 导入、对比完成后按快照刷新，都会更新它。
+   * 参考库为空（全新安装、尚未导入）时显示「—」。
+   */
+  function renderUpdateTime() {
+    const el = document.getElementById('update-time');
+    if (!el) return;
+
+    let iso = null;
+    try {
+      if (typeof PODatabase !== 'undefined') iso = PODatabase.getStats().lastImportTime;
+    } catch (e) { /* 参考库不可用时按未导入处理 */ }
+
+    const d = iso ? new Date(iso) : null;
+    if (!d || isNaN(d.getTime())) {
+      el.textContent = '数据更新: —';
+      el.removeAttribute('title');
+      return;
+    }
+    const pad = (n) => String(n).padStart(2, '0');
+    el.textContent = `数据更新: ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    el.title = `参考库刷新时间：${d.toLocaleString()}`;
+  }
+
+  // ============================================================
   // 更新 (由 app.js 在钻取时调用，可传递上下文)
   // ============================================================
   function update(level, provinceAdcode) {
     renderOverview();
+    renderUpdateTime();
 
     // 排名只在省级视图显示
     if (level === 'nation' || level === 'province') {

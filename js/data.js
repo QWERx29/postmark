@@ -16,7 +16,11 @@
 const MUNICIPALITIES = ['北京市', '天津市', '上海市', '重庆市'];
 
 // ============================================================
-// 2. 行政区划参考数据 (total = 该省邮局估算总数，精确到省)
+// 2. 行政区划参考数据
+//    total = 该省邮局总数的**兜底估算值**。运行时优先用参考库
+//    （base/post*.csv，即中国邮政官网抓取结果）里该省的 POST 条数
+//    覆盖它，见 _officialProvinceCounts / _provinceTotal。
+//    只有该省没有官网数据（未抓取 / 尚未导入 / 已被删除）时才用这个数字。
 // ============================================================
 const PROVINCE_DATA = [
   {
@@ -1405,6 +1409,43 @@ function _hasRecords() {
   try { return RecordStore.count() > 0; } catch { return false; }
 }
 
+/**
+ * 邮政官网(POST)各省网点数。
+ *
+ * `base/post*.csv` 就是中国邮政官网的抓取结果，参考库元数据里的 postCount
+ * 即该省当前官网网点条数。省份排名表的「总计」以它为准，不再依赖
+ * PROVINCE_DATA 里手写的估算值；没有官网数据的省份（未抓取 / 尚未导入 /
+ * 已被删除，如台港澳）不在此表中，由 _provinceTotal 退回估算值。
+ *
+ * 参考库在启动时水合、导入或对比刷新后都会更新 meta，这里每次调用都重新读，
+ * 因此「总计」始终跟随参考库变化，无需缓存失效逻辑。
+ *
+ * @returns {Object<string, number>|null} 省名 → 网点数；参考库不可用/为空时返回 null
+ */
+function _officialProvinceCounts() {
+  if (typeof PODatabase === 'undefined') return null;
+  let stats = null;
+  try { stats = PODatabase.getStats(); } catch (e) { return null; }
+  if (!stats || !Array.isArray(stats.provinces) || stats.provinces.length === 0) return null;
+
+  const counts = Object.create(null);
+  for (const p of stats.provinces) {
+    if (p && p.name) counts[p.name] = p.postCount || 0;
+  }
+  return counts;
+}
+
+/**
+ * 某省的网点总数：优先取邮政官网的实时条数，没有则退回静态估算值。
+ * @param {Object} province PROVINCE_DATA 中的省份
+ * @param {Object<string, number>|null} [official] _officialProvinceCounts() 的结果
+ * @returns {number}
+ */
+function _provinceTotal(province, official) {
+  const n = official ? official[province.name] : 0;
+  return n > 0 ? n : province.total;
+}
+
 const PostmarkData = {
   /** 获取所有省份数据 */
   getAllProvinces() {
@@ -1442,10 +1483,11 @@ const PostmarkData = {
     return getDistricts(cityName);
   },
 
-  /** 获取全国汇总 */
+  /** 获取全国汇总（total 为各省网点总数之和，优先取邮政官网条数） */
   getNationSummary() {
+    const official = _officialProvinceCounts();
     let total = 0;
-    for (const p of PROVINCE_DATA) total += p.total;
+    for (const p of PROVINCE_DATA) total += _provinceTotal(p, official);
 
     if (!_hasRecords()) {
       return { total, collected: 0, provinces: PROVINCE_DATA.length, coveredProvinces: 0, coveredCities: 0 };
@@ -1470,6 +1512,7 @@ const PostmarkData = {
 
   /** 获取用于分布图的数据（按省份） */
   getProvinceRates() {
+    const official = _officialProvinceCounts();
     if (!_hasRecords()) {
       return PROVINCE_DATA.map(p => ({
         name: p.name,
@@ -1479,9 +1522,10 @@ const PostmarkData = {
     const provStats = RecordStore.getProvinceStats();
     return PROVINCE_DATA.map(p => {
       const collected = provStats[p.name] ? provStats[p.name].collected : 0;
+      const total = _provinceTotal(p, official);
       return {
         name: p.name,
-        rate: p.total > 0 ? Math.round(collected / p.total * 100) : 0
+        rate: total > 0 ? Math.round(collected / total * 100) : 0
       };
     });
   },
@@ -1540,20 +1584,22 @@ const PostmarkData = {
     return [];
   },
 
-  /** 按完成率排序，返回排名数据 */
+  /** 按完成率排序，返回排名数据（total 优先取邮政官网条数） */
   getRanking() {
     const hasRecs = _hasRecords();
     const provStats = hasRecs ? RecordStore.getProvinceStats() : {};
+    const official = _officialProvinceCounts();
     return PROVINCE_DATA
       .map(p => {
         const collected = hasRecs
           ? (provStats[p.name] ? provStats[p.name].collected : 0)
           : p.collected;
+        const total = _provinceTotal(p, official);
         return {
           name: p.name,
           collected,
-          total: p.total,
-          rate: p.total > 0 ? +(collected / p.total * 100).toFixed(1) : 0,
+          total,
+          rate: total > 0 ? +(collected / total * 100).toFixed(1) : 0,
           adcode: p.adcode
         };
       })

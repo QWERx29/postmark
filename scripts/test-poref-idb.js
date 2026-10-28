@@ -283,6 +283,13 @@ async function main() {
     console.log(`  · 参考：北京(110000) = ${bj ? bj.postCount + bj.spbCount : '?'} 条` +
       `（Electron 旧库为 1449，其 base 文件今天 9:57 更新过，允许不一致）`);
 
+    // 排名表的「总计」不再用手写估算值，而是跟随参考库里的官网 POST 条数
+    const bjRank = vm.runInContext(
+      'PostmarkData.getRanking().find((r) => r.name === "北京市")', ctx);
+    check('排名表「总计」跟随官网 POST 条数',
+      !!bjRank && !!bj && bjRank.total === bj.postCount,
+      `${bjRank ? bjRank.total : '?'} vs post=${bj ? bj.postCount : '?'}`);
+
     // ---------- 场景 0：负向对照（旧写法必然撞配额）----------
     console.log('\n场景 0  负向对照：把同样的库按旧写法塞进 5 MiB 的 localStorage');
     const provinceJson = vm.runInContext(`(() => {

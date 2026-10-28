@@ -23,6 +23,21 @@
   /** 单个日志区保留的最大行数，避免长时间运行后 DOM 膨胀 */
   const MAX_LOG_LINES = 4000;
 
+  /** 邮管局并发数：1~4 的整数，非法值回落到默认 2（与引擎的校验保持一致） */
+  const SPB_CONCURRENCY_DEFAULT = 2;
+  const SPB_CONCURRENCY_MAX = 4;
+
+  function readSpbConcurrency() {
+    const el = $('crawl-spb-concurrency');
+    if (!el) return SPB_CONCURRENCY_DEFAULT;
+    const n = Number(el.value);
+    const v = Number.isFinite(n)
+      ? Math.min(SPB_CONCURRENCY_MAX, Math.max(1, Math.floor(n)))
+      : SPB_CONCURRENCY_DEFAULT;
+    el.value = String(v);
+    return v;
+  }
+
   let provincesLoaded = false;
   /** /api/crawl/provinces 的结果 [{name, abbr, code}]，用于把 postbj 之类的前缀译成中文名 */
   let provinceList = [];
@@ -341,6 +356,22 @@
     $('crawl-prov-all').addEventListener('click', () => setAllProvinces('crawl-province', true));
     $('crawl-prov-none').addEventListener('click', () => setAllProvinces('crawl-province', false));
 
+    // 并发数只对邮管局生效：没勾邮管局时置灰，避免误以为改了 POST 的节奏
+    const concurrencyEl = $('crawl-spb-concurrency');
+    const concurrencyHint = $('crawl-concurrency-hint');
+    const syncConcurrencyState = () => {
+      const on = $('crawl-src-spb').checked;
+      if (concurrencyEl) concurrencyEl.disabled = !on;
+      if (concurrencyHint) {
+        concurrencyHint.textContent = on
+          ? '仅作用于邮管局省份抓取；邮政官网始终串行'
+          : '未选择邮管局，本项不生效';
+      }
+    };
+    $('crawl-src-post').addEventListener('change', syncConcurrencyState);
+    $('crawl-src-spb').addEventListener('change', syncConcurrencyState);
+    syncConcurrencyState();
+
     cancelBtn.addEventListener('click', () => cancelJob(statusEl));
 
     startBtn.addEventListener('click', async () => {
@@ -374,6 +405,7 @@
           doSpb,
           delay: Number($('crawl-delay').value) || 0,
           interDelay: Number($('crawl-inter-delay').value) || 0,
+          spbConcurrency: readSpbConcurrency(),
         },
         logEl,
         statusEl,
@@ -500,6 +532,11 @@
       if (typeof Tools !== 'undefined') {
         Tools.refreshPOSearch();
         Tools.refreshRandomPO();
+      }
+      // 排名表的「总计」取自参考库里的邮政官网网点数，也要跟着重算
+      if (typeof StatsView !== 'undefined' && typeof MapView !== 'undefined') {
+        const level = MapView.getCurrentLevel();
+        StatsView.update(level === 'province' ? 'nation' : 'city', MapView.getCurrentProvince());
       }
 
       const stats = PODatabase.getStats();
@@ -1454,6 +1491,8 @@
     const countCat = (cat) => list.reduce(
       (n, p) => n + (((p.summary || {}).byCategory || {})[cat] || 0), 0);
     const countSum = (key) => list.reduce((n, p) => n + ((p.summary || {})[key] || 0), 0);
+    /** 条目顶层的计数字段（如 ignoredNew，不在 summary 里） */
+    const countTop = (key) => list.reduce((n, p) => n + (p[key] || 0), 0);
 
     const items = [];
     for (const c of INTELLIGENT_CARDS) {
@@ -1467,10 +1506,12 @@
     const removed = countSum('removed');
     const blocks = countSum('blocks');
     const comprehensive = countSum('comprehensive');
+    const ignoredNew = countTop('ignoredNew');
     if (added) items.push({ label: '疑似新增', value: added, color: '#28a745' });
     if (removed) items.push({ label: '疑似撤下', value: removed, color: '#fa8c16' });
     if (blocks) items.push({ label: '连续变化区块', value: blocks, color: '#6c757d' });
     if (comprehensive) items.push({ label: '⚠综合变化', value: comprehensive, color: '#d93026' });
+    if (ignoredNew) items.push({ label: '已归档撤销(不计新增)', value: ignoredNew, color: '#6c757d' });
 
     if (!items.length) items.push({ label: '两份数据完全一致', value: '✓', color: '#28a745' });
     return makeCards(items);
@@ -1516,6 +1557,18 @@
     };
     unmatchedTable('疑似新增网点', p.unmatched1 || [], (p.summary || {}).new || 0);
     unmatchedTable('疑似撤下网点', p.unmatched2 || [], (p.summary || {}).removed || 0);
+
+    // 带「撤销」字样、已在 base_old 历史库里的记录不计入新增，但要把数量说清楚，
+    // 否则用户会疑惑「output 里明明有这条，为什么新增里没有」。
+    const ignoredNew = p.ignoredNew || 0;
+    if (ignoredNew) {
+      const noteEl = document.createElement('p');
+      noteEl.className = 'rm-footnote';
+      noteEl.textContent =
+        `另有 ${ignoredNew} 条带「撤销」字样的记录已在 base_old 历史库中，` +
+        '不计入新增网点。';
+      nodes.push(noteEl);
+    }
 
     // 连续变化区块
     const blocks = p.blocks || [];
@@ -1786,7 +1839,8 @@
       intro.className = 'rm-footnote';
       intro.textContent =
         '语义级判别：把两份数据按「区县+归一化名称 → 公共中文字串 → 邮编」三级规则配成对，' +
-        '再逐字段比出变化类型，并识别疑似新增/撤下与连续变化区块。与落盘的智能判别报告同源。';
+        '再逐字段比出变化类型，并识别疑似新增/撤下与连续变化区块。' +
+        '带「撤销」字样且已在 base_old 历史库中的记录不计入新增。与落盘的智能判别报告同源。';
       box.appendChild(intro);
       box.appendChild(buildIntelligentCards(intelList));
     }

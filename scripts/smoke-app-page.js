@@ -21,6 +21,33 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const Server = require(path.join(ROOT, 'server.js'));
 const BrowserTest = require(path.join(__dirname, '_lib', 'browser-test.js'));
+const iconv = require(path.join(ROOT, 'node_modules', 'iconv-lite'));
+
+/**
+ * 网点详情自检用的迷你参考库（GBK 编码后以 base64 塞进页面）。
+ *
+ * 为什么自己造一份：参考库是启动后异步从 base/ 目录导入的，入口页自检在
+ * DOMContentLoaded 就跑完了，那时 PODatabase 还是空的，直接依赖真实数据会让
+ * 这条用例时好时坏。造 3 条（POST / SPB / 历史归档各一）既覆盖三种详情版式，
+ * 又不依赖导入时序。
+ */
+const PO_TEST_CSV_POST = [
+  '省,市,区/市/县,网点名称,邮编,地址',
+  '北京市,北京市,西城区,中南海邮政支局,100017,西长安街甲1号',
+].join('\n');
+const PO_TEST_CSV_SPB = [
+  '所属省,所属市,所属县,场所名称,开办业务,详情链接',
+  '北京市,北京市,西城区,西单邮政支局,信函、包裹、印刷品,https://example.com/spb/1',
+].join('\n');
+const PO_TEST_CSV_OLD = [
+  '来源,省,市,区/市/县,网点名称,邮编,地址,开办业务,详情链接,归档原因,归档时间',
+  'post,北京市,北京市,西城区,更名前老局,100017,旧地址3号,,,名称变化,2026-01-01',
+].join('\n');
+
+/** 文本 → GBK → base64（页面里再用 atob 还原成 ArrayBuffer） */
+function gbkB64(text) {
+  return iconv.encode(text, 'gbk').toString('base64');
+}
 
 /** 临时站点里用目录联接接回项目的目录（删除时必须先摘链接，见 removeSite） */
 const LINKED_DIRS = ['js', 'css', 'geo', 'base', 'node_modules'];
@@ -41,6 +68,10 @@ function buildSite() {
   const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
   const probe = `
 <script>
+// 网点详情自检用的迷你参考库（GBK→base64，Node 侧生成，见 buildSite）
+const PO_POST_B64 = '${gbkB64(PO_TEST_CSV_POST)}';
+const PO_SPB_B64 = '${gbkB64(PO_TEST_CSV_SPB)}';
+const PO_OLD_B64 = '${gbkB64(PO_TEST_CSV_OLD)}';
 /**
  * 全部检查都放在 __runSmoke 里，并等到 DOMContentLoaded 之后再跑。
  *
@@ -50,7 +81,7 @@ function buildSite() {
  * 也就是各模块 init() 还没跑（下拉框还没选项、事件还没绑定）。
  * 早先直接在解析期断言 DOM，量到的其实是空壳，一批检查会假红。
  */
-function __runSmoke() {
+async function __runSmoke() {
 const issues = [];
 function need(sel, label) {
   const el = typeof sel === 'string' ? document.querySelector(sel) : sel;
@@ -693,6 +724,210 @@ const returnCssOk = Array.from(document.styleSheets).some((sheet) => {
   } catch (e) { return false; }
 });
 if (!returnCssOk) issues.push('style.css 缺少 #return-table-wrap 版式规则');
+
+// 网点详情：单击「网点名称」→ 地址 / 开办业务 / 归档情况 / 收集记录
+try {
+  const b64ToBuffer = (b64) => {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes.buffer;
+  };
+
+  RecordStore.clear();
+  RecordStore.add({
+    province: '北京市', city: '北京市', district: '西城区',
+    postOffice: '中南海邮政支局', postalCode: '100017', institutionCode: '10001700',
+    status: 'open', cancelDate: '2026010208', stampNumbers: ['1'], material: '回墨',
+    photos: [],
+  });
+
+  await PODatabase.importCSVBulk([
+    { buffer: b64ToBuffer(PO_POST_B64), sourceType: 'post', name: 'postbj+base.csv' },
+    { buffer: b64ToBuffer(PO_SPB_B64), sourceType: 'spb', name: 'spbbj+base.csv' },
+  ], undefined, { mode: 'replace' });
+  await PODatabase.importHistory(b64ToBuffer(PO_OLD_B64));
+
+  document.getElementById('btn-show-po-search').click();
+  Tools.refreshPOSearch();
+
+  const findNameBtn = (name) => Array.from(document.querySelectorAll('#tool-po-search-body .po-name-btn'))
+    .find((b) => b.textContent === name);
+  const detailOverlay = document.getElementById('po-detail-overlay');
+  const detailText = () => document.getElementById('po-detail-list').textContent;
+  const detailHead = () => document.getElementById('po-detail-head').textContent;
+
+  const poRows = document.querySelectorAll('#tool-po-search-body tr');
+  if (poRows.length !== 3) issues.push('网点检索应渲染 3 行（POST / SPB / 历史），实际 ' + poRows.length);
+  ['中南海邮政支局', '西单邮政支局', '更名前老局'].forEach((n) => {
+    if (!findNameBtn(n)) issues.push('网点名称「' + n + '」没有做成可点击的按钮');
+  });
+
+  // POST：地址 + 已收集（机构号来自本机日戳记录）
+  const postBtn = findNameBtn('中南海邮政支局');
+  if (postBtn) {
+    postBtn.click();
+    if (!detailOverlay.classList.contains('active')) issues.push('单击网点名称没有弹出详情');
+    if (detailHead().indexOf('中南海邮政支局') === -1) issues.push('详情没显示网点名称');
+    if (detailHead().indexOf('已收集') === -1) issues.push('已收集的网点应在详情里标出来');
+    if (detailText().indexOf('西长安街甲1号') === -1) issues.push('详情没显示地址');
+    if (detailText().indexOf('10001700') === -1) issues.push('详情没显示收集记录的机构号');
+    if (Tools.closePODetail() !== true) issues.push('网点详情打开时 closePODetail 应返回 true');
+    if (detailOverlay.classList.contains('active')) issues.push('关闭后网点详情不应还亮着');
+    if (Tools.closePODetail() !== false) issues.push('网点详情已关闭时 closePODetail 应返回 false');
+  }
+
+  // SPB：没有地址字段，但有开办业务与详情链接
+  const spbBtn = findNameBtn('西单邮政支局');
+  if (spbBtn) {
+    spbBtn.click();
+    if (detailText().indexOf('信函、包裹、印刷品') === -1) issues.push('SPB 详情没显示开办业务');
+    if (detailText().indexOf('SPB 数据源不含地址') === -1) issues.push('SPB 详情应说明没有地址');
+    const link = document.querySelector('#po-detail-list a.po-detail-link');
+    if (!link || link.getAttribute('href') !== 'https://example.com/spb/1') {
+      issues.push('SPB 详情没给出去邮管局的详情链接');
+    }
+    Tools.closePODetail();
+  }
+
+  // 历史归档：标出归档原因 / 时间
+  const oldBtn = findNameBtn('更名前老局');
+  if (oldBtn) {
+    oldBtn.click();
+    if (detailHead().indexOf('历史归档') === -1) issues.push('历史归档网点应带「历史归档」标记');
+    if (detailText().indexOf('名称变化') === -1) issues.push('历史归档详情没显示归档原因');
+    if (detailText().indexOf('2026-01-01') === -1) issues.push('历史归档详情没显示归档时间');
+    Tools.closePODetail();
+  }
+} catch (e) {
+  issues.push('网点详情抛出: ' + ((e && e.message) || e));
+}
+
+// 邮戳图片：正方形画廊 + 单击看详情
+try {
+  RecordStore.clear();
+  RecordStore.add({
+    province: '北京市', city: '北京市', district: '西城区',
+    postOffice: '中南海邮政支局', postalCode: '100017', institutionCode: '10001700',
+    status: 'open', cancelDate: '2026010208', stampNumbers: ['1', '2'], material: '回墨',
+    hasScenicPostmark: true, scenicNames: ['中南海'], notes: '自检备注',
+    photos: ['rec-a/10000123_2026010208_中南海邮政支局_01.jpg',
+             'rec-a/10000123_2026010208_中南海邮政支局_02.jpg'],
+  });
+  RecordStore.add({
+    province: '上海市', city: '上海市', district: '黄浦区',
+    postOffice: '外滩邮政支局', postalCode: '200002', institutionCode: '20000200',
+    status: 'open', cancelDate: '2025010109',
+    photos: ['rec-b/20000200_2025010109_外滩邮政支局_01.jpg'],
+  });
+
+  document.getElementById('btn-show-gallery').click();
+  if (document.getElementById('gallery-page').style.display === 'none') {
+    issues.push('点「邮戳图片」没有切到该页');
+  }
+  const grid = document.getElementById('gallery-grid');
+  let galleryTiles = grid.querySelectorAll('.gallery-tile');
+  if (galleryTiles.length !== 3) issues.push('画廊应显示 3 张图片，实际 ' + galleryTiles.length);
+  if (document.getElementById('gallery-count').textContent.indexOf('3 张图片') === -1) {
+    issues.push('画廊计数不对：' + document.getElementById('gallery-count').textContent);
+  }
+  if (galleryTiles.length && getComputedStyle(galleryTiles[0]).aspectRatio !== '1 / 1') {
+    issues.push('每个展示区应为正方形，实际 aspect-ratio=' + getComputedStyle(galleryTiles[0]).aspectRatio);
+  }
+  // 默认按盖销日期新→旧：第一张应属于中南海（2026-01-02）
+  if (galleryTiles.length && (galleryTiles[0].getAttribute('title') || '').indexOf('中南海邮政支局') === -1) {
+    issues.push('画廊默认排序（盖销日期新→旧）不对：' + (galleryTiles[0].getAttribute('title') || ''));
+  }
+
+  // 省份筛选
+  const galleryProv = document.getElementById('f-gallery-province');
+  if (!Array.from(galleryProv.options).some((o) => o.value === '上海市')) {
+    issues.push('画廊省份筛选应含上海市');
+  }
+  galleryProv.value = '上海市';
+  galleryProv.dispatchEvent(new Event('change'));
+  galleryTiles = grid.querySelectorAll('.gallery-tile');
+  if (galleryTiles.length !== 1) issues.push('按省份筛「上海市」应剩 1 张，实际 ' + galleryTiles.length);
+  galleryProv.value = '';
+  galleryProv.dispatchEvent(new Event('change'));
+
+  // 关键字搜索（200ms 防抖）
+  const gallerySearch = document.getElementById('f-gallery-search');
+  gallerySearch.value = '中南海';
+  gallerySearch.dispatchEvent(new Event('input'));
+  await new Promise((r) => setTimeout(r, 320));
+  galleryTiles = grid.querySelectorAll('.gallery-tile');
+  if (galleryTiles.length !== 2) issues.push('搜索「中南海」应命中 2 张，实际 ' + galleryTiles.length);
+  gallerySearch.value = '';
+  gallerySearch.dispatchEvent(new Event('input'));
+  await new Promise((r) => setTimeout(r, 320));
+
+  if (document.getElementById('f-gallery-sort').options.length !== 4) {
+    issues.push('画廊排序下拉应有 4 个选项，实际 ' + document.getElementById('f-gallery-sort').options.length);
+  }
+
+  // 单击展示区 → 详情
+  const galleryOverlay = document.getElementById('gallery-detail-overlay');
+  const galleryPos = () => document.getElementById('gallery-detail-pos').textContent;
+  galleryTiles = grid.querySelectorAll('.gallery-tile');
+  galleryTiles[0].click();
+  if (!galleryOverlay.classList.contains('active')) issues.push('单击展示区没有弹出图片详情');
+  if (galleryPos().indexOf('第 1 / 3 张') === -1) issues.push('图片详情位置不对：' + galleryPos());
+  if (galleryPos().indexOf('本条记录第 1 / 2 张') === -1) {
+    issues.push('多图记录没标出是这条记录的第几张：' + galleryPos());
+  }
+  if (document.getElementById('gallery-detail-head').textContent.indexOf('中南海邮政支局') === -1) {
+    issues.push('图片详情没显示邮局名称');
+  }
+  const galleryInfo = document.getElementById('gallery-detail-list').textContent;
+  if (galleryInfo.indexOf('10001700') === -1) issues.push('图片详情没显示机构号');
+  if (galleryInfo.indexOf('2026-01-02 08:00') === -1) issues.push('图片详情没显示格式化后的盖销日期');
+  if (galleryInfo.indexOf('图片文件') === -1) issues.push('图片详情没显示文件名');
+
+  // 左右翻页（按钮 + ← / → 键）
+  document.getElementById('gallery-detail-next').click();
+  if (galleryPos().indexOf('第 2 / 3 张') === -1) issues.push('点「下一张」没有翻页：' + galleryPos());
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+  if (galleryPos().indexOf('第 3 / 3 张') === -1) issues.push('→ 键没有翻页：' + galleryPos());
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+  if (galleryPos().indexOf('第 2 / 3 张') === -1) issues.push('← 键没有翻页：' + galleryPos());
+
+  if (GalleryPage.closeDetail() !== true) issues.push('图片详情打开时 closeDetail 应返回 true');
+  if (galleryOverlay.classList.contains('active')) issues.push('关闭后图片详情不应还亮着');
+  if (GalleryPage.closeDetail() !== false) issues.push('图片详情已关闭时 closeDetail 应返回 false');
+
+  // 「编辑记录」把这条日戳记录交回录入表单
+  if (typeof EntryForm !== 'undefined' && document.getElementById('f-province').options.length === 0) {
+    EntryForm.init();
+  }
+  galleryTiles[0].click();
+  document.getElementById('gallery-detail-edit').click();
+  if (galleryOverlay.classList.contains('active')) issues.push('点「编辑记录」后图片详情应收起');
+  if (!document.getElementById('form-overlay').classList.contains('active')) {
+    issues.push('点「编辑记录」没有打开录入表单');
+  }
+  if (document.getElementById('f-postoffice').value !== '中南海邮政支局') {
+    issues.push('编辑记录回填的邮局名称不对：' + document.getElementById('f-postoffice').value);
+  }
+  document.getElementById('f-cancel').click();
+
+  // 离开页面时图片详情一并收起，不能留下 fixed 遮罩锁住滚动
+  galleryTiles[0].click();
+  document.getElementById('btn-show-overview').click();
+  if (document.getElementById('gallery-page').style.display !== 'none') issues.push('离开后「邮戳图片」页应隐藏');
+  if (galleryOverlay.classList.contains('active')) issues.push('离开「邮戳图片」页时图片详情应收起');
+  if (document.body.style.overflow) issues.push('离开「邮戳图片」页后不应锁住滚动');
+} catch (e) {
+  issues.push('邮戳图片界面抛出: ' + ((e && e.message) || e));
+}
+
+// 画廊的版式规则（正方形展示区，规则丢了 aspect-ratio 断言会先失败，这里再兜一层）
+const galleryCssOk = Array.from(document.styleSheets).some((sheet) => {
+  try {
+    return Array.from(sheet.cssRules || []).some((r) => (r.selectorText || '').includes('.gallery-tile'));
+  } catch (e) { return false; }
+});
+if (!galleryCssOk) issues.push('style.css 缺少 .gallery-tile 规则');
 
 // 打开录入表单，确认图片区真的在工作
 try {

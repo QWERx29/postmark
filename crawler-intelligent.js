@@ -523,12 +523,15 @@ function groupByDistrict(records) {
  * @param {string} prefixLabel
  * @param {Array} blocks 已算好的区块（Python 在函数内算，这里由调用方传入同一份结果）
  * @param {string} nowStr 生成时间字符串 YYYY-MM-DD HH:MM:SS
+ * @param {Array} [ignoredNew] 被判定为「不算新增」的新版独有记录（如已归档的撤销记录）
  * @returns {string[]}
  */
 function generateIntelligentReport(changes, unmatched1, unmatched2,
                                    records1, records2,
-                                   sourceType, prefixLabel, blocks, nowStr) {
+                                   sourceType, prefixLabel, blocks, nowStr,
+                                   ignoredNew) {
   const lines = [];
+  const ignored = Array.isArray(ignoredNew) ? ignoredNew : [];
   lines.push(`=== 智能判别分析: ${prefixLabel} ===`);
   lines.push(`生成时间: ${nowStr}`);
   lines.push(`数据来源: ${sourceType === 'post' ? '邮政官网(POST)' : '邮管局备案(SPB)'}`);
@@ -536,7 +539,11 @@ function generateIntelligentReport(changes, unmatched1, unmatched2,
   lines.push('');
 
   if (!changes.length && !unmatched1.length && !unmatched2.length) {
-    lines.push('  ✓ 两份数据完全一致，无任何差异。');
+    if (ignored.length) {
+      lines.push(`  ✓ 除 ${ignored.length} 条已归档的撤销记录外，两份数据一致。`);
+    } else {
+      lines.push('  ✓ 两份数据完全一致，无任何差异。');
+    }
     return lines;
   }
 
@@ -561,6 +568,9 @@ function generateIntelligentReport(changes, unmatched1, unmatched2,
   const nRemoved = unmatched2.length;
   if (nNew) lines.push(`  ${L('新增网点', 18)}: ${R(nNew, 4)} 条`);
   if (nRemoved) lines.push(`  ${L('撤下网点', 18)}: ${R(nRemoved, 4)} 条`);
+  if (ignored.length) {
+    lines.push(`  ${L('已归档撤销', 18)}: ${R(ignored.length, 4)} 条（不计入新增网点）`);
+  }
   if (blocks.length) lines.push(`  ${L('连续变化区块', 18)}: ${R(blocks.length, 4)} 个`);
 
   const comprehensive = changes.filter(c => c.categories.some(cat => cat.startsWith('⚠')));
@@ -783,10 +793,14 @@ function capList(list, cap = DETAIL_CAP) {
  * @param {object[]} records2 旧版记录（base）
  * @param {string} [sourceType] 'post' | 'spb'，缺省按 prefixLabel 判断，再缺省按 post
  * @param {string} [prefixLabel] 报告标题里显示的文件名
- * @param {object} [opts] { now: Date, cap: number }
+ * @param {object} [opts] { now: Date, cap: number, ignoreNew: Function }
+ *        ignoreNew(record) 返回 true 的新版独有记录不计入「新增网点」
+ *        （例如带「撤销」字样且已在 base_old 历史库中的记录）。
+ *        这些记录仍算在新版数据总数里，只是不再当作新增。
  * @returns {object} {
  *   lines, sourceType, newCount, oldCount,
  *   summary: { byCategory, new, removed, blocks, comprehensive },
+ *   ignoredNew,                                   // 被排除、不计入「新增网点」的条数
  *   changes, unmatched1, unmatched2, blocks      // 已按 cap 裁剪
  * }
  */
@@ -807,18 +821,32 @@ function intelligentCompare(records1, records2, sourceType, prefixLabel, opts) {
   if (empty) {
     return {
       lines: [`=== 智能判别分析: ${label} ===`, '两份文件均为空，无法对比。'],
-      sourceType: src, newCount: 0, oldCount: 0,
+      sourceType: src, newCount: 0, oldCount: 0, ignoredNew: 0,
       summary: { byCategory: {}, new: 0, removed: 0, blocks: 0, comprehensive: 0 },
       changes: [], unmatched1: [], unmatched2: [], blocks: [],
     };
   }
 
-  const { matchedPairs, unmatched1, unmatched2 } = matchSameSource(records1, records2, src);
+  const { matchedPairs, unmatched1: rawUnmatched1, unmatched2 } =
+    matchSameSource(records1, records2, src);
+
+  // 「不算新增」的记录：先从 NEW 集合里挑出来，再参与区块识别与报告。
+  // 它们不在 unmatched1 里，因此不会出现在「新增网点」计数/明细和连续变化区块中。
+  let unmatched1 = rawUnmatched1;
+  let ignoredNew = [];
+  if (typeof o.ignoreNew === 'function') {
+    unmatched1 = [];
+    for (const item of rawUnmatched1) {
+      if (o.ignoreNew(item[1])) ignoredNew.push(item);
+      else unmatched1.push(item);
+    }
+  }
+
   const changes = classifyChanges(matchedPairs, src);
   const blocks = detectConsecutiveBlocks(changes, unmatched1, unmatched2, records1, records2);
 
   const lines = generateIntelligentReport(
-    changes, unmatched1, unmatched2, records1, records2, src, label, blocks, nowStr
+    changes, unmatched1, unmatched2, records1, records2, src, label, blocks, nowStr, ignoredNew
   );
 
   // 汇总（用于弹窗卡片）：分类计数与报告正文同源
@@ -835,6 +863,8 @@ function intelligentCompare(records1, records2, sourceType, prefixLabel, opts) {
     sourceType: src,
     newCount: records1.length,
     oldCount: records2.length,
+    // 被排除、不计入新增的条数（如已归档的撤销记录）；summary 保持与 Python 基准同构
+    ignoredNew: ignoredNew.length,
     summary: {
       byCategory,
       new: unmatched1.length,
