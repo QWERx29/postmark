@@ -212,7 +212,7 @@ async function main() {
   const reportFile = path.join(os.tmpdir(), `postmark-startup-${process.pid}.json`);
 
   console.log('============================================================');
-  console.log(' 新一代日戳管理系统 — npm start');
+  console.log(' 新一代集邮管理系统 — npm start');
 
   let activeProfile = PROJECT_PROFILE;
   const profileState = ensureProjectProfile();

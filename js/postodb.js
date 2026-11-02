@@ -682,6 +682,16 @@ const PODatabase = (function () {
     },
 
     /**
+     * 解析 CSV 文本（RFC 4180 引号转义、CRLF/LF 混排）。
+     * 供港澳台 PostalStore 复用；返回二维数组，字段已 trim。
+     * @param {string} text
+     * @returns {string[][]}
+     */
+    parseCSV(text) {
+      return _parseCSV(String(text == null ? '' : text));
+    },
+
+    /**
      * 导入（整份替换）历史归档 —— base_old.csv 的内容。
      * @param {ArrayBuffer|null} buffer  null/空 表示没有归档，历史部分清空
      * @returns {Promise<number>} 导入条数

@@ -628,7 +628,7 @@ const PROVINCE_DATA = [
     ]
   },
   {
-    adcode: 710000, name: "台湾省", total: 1281,
+    adcode: 710000, name: "台湾省", total: 1648,
     cities: [
       { adcode: 710001, name: "台北市" },
       { adcode: 710002, name: "新北市" },
@@ -655,7 +655,7 @@ const PROVINCE_DATA = [
     ]
   },
   {
-    adcode: 810000, name: "香港特别行政区", total: 181,
+    adcode: 810000, name: "香港特别行政区", total: 119,
     cities: [
       { adcode: 810001, name: "中西区" },
       { adcode: 810002, name: "东区" },
@@ -678,7 +678,7 @@ const PROVINCE_DATA = [
     ]
   },
   {
-    adcode: 820000, name: "澳门特别行政区", total: 42,
+    adcode: 820000, name: "澳门特别行政区", total: 17,
     cities: [
       { adcode: 820001, name: "花地玛堂区" },
       { adcode: 820002, name: "圣安多尼堂区" },
@@ -1410,29 +1410,46 @@ function _hasRecords() {
 }
 
 /**
- * 邮政官网(POST)各省网点数。
+ * 邮政官网(POST)各省网点数 + 港澳台网点数。
  *
- * `base/post*.csv` 就是中国邮政官网的抓取结果，参考库元数据里的 postCount
- * 即该省当前官网网点条数。省份排名表的「总计」以它为准，不再依赖
- * PROVINCE_DATA 里手写的估算值；没有官网数据的省份（未抓取 / 尚未导入 /
- * 已被删除，如台港澳）不在此表中，由 _provinceTotal 退回估算值。
+ * `base/post*.csv` 是大陆省级邮政官网的抓取结果，参考库元数据里的 postCount
+ * 即该省当前官网网点条数；港澳台由 PostalStore 读取
+ * base/{posthk,postmo,posttw,agencytw}+base.csv（没有时退回 output 最新结果）。
+ * 台湾省的总数按「邮局 + 代办所」合并，因此 1277 + 371 = 1648。
  *
- * 参考库在启动时水合、导入或对比刷新后都会更新 meta，这里每次调用都重新读，
- * 因此「总计」始终跟随参考库变化，无需缓存失效逻辑。
+ * 参考库在启动时水合、导入或对比刷新后都会更新 meta；PostalStore 在启动时
+ * 载入、抓取完成后 reload。这里每次调用都重新读，因此「总计」始终跟随数据变化。
  *
- * @returns {Object<string, number>|null} 省名 → 网点数；参考库不可用/为空时返回 null
+ * @returns {Object<string, number>|null} 省名 → 网点数；两边都没有数据时返回 null
  */
 function _officialProvinceCounts() {
-  if (typeof PODatabase === 'undefined') return null;
-  let stats = null;
-  try { stats = PODatabase.getStats(); } catch (e) { return null; }
-  if (!stats || !Array.isArray(stats.provinces) || stats.provinces.length === 0) return null;
-
   const counts = Object.create(null);
-  for (const p of stats.provinces) {
-    if (p && p.name) counts[p.name] = p.postCount || 0;
+  let hasData = false;
+
+  if (typeof PODatabase !== 'undefined') {
+    let stats = null;
+    try { stats = PODatabase.getStats(); } catch (e) { stats = null; }
+    if (stats && Array.isArray(stats.provinces)) {
+      for (const p of stats.provinces) {
+        if (p && p.name) {
+          counts[p.name] = p.postCount || 0;
+          hasData = true;
+        }
+      }
+    }
   }
-  return counts;
+
+  if (typeof PostalStore !== 'undefined') {
+    try {
+      const postal = PostalStore.getProvinceCounts();
+      for (const name of Object.keys(postal)) {
+        counts[name] = postal[name];
+        hasData = true;
+      }
+    } catch (e) { /* 港澳台数据不可用时保留 base/静态估算 */ }
+  }
+
+  return hasData ? counts : null;
 }
 
 /**

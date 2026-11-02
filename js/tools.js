@@ -420,6 +420,20 @@
       .map(normField).join(COLLECTED_SEP);
   }
 
+  /**
+   * 港澳台网点的宽松匹配键: 省 + 局名。
+   * 港澳没有真实邮编，台湾录入记录也可能没有区县/邮编；用局名在同一省级
+   * 行政区内匹配，避免因为这些字段缺失而漏标绿。
+   */
+  function regionCollectedKey(r) {
+    return [r.province, normName(r.name)].map(normField).join(COLLECTED_SEP);
+  }
+
+  /** 参考库记录用哪套键：港澳台用宽松键，大陆 POST/SPB 保持原口径 */
+  function matchKey(r) {
+    return r.regionOffice ? regionCollectedKey(r) : collectedKey(r);
+  }
+
   let _collectedKeys = null;
 
   function getCollectedKeys() {
@@ -428,12 +442,15 @@
     if (typeof RecordStore !== 'undefined') {
       for (const rec of RecordStore.getAll()) {
         // 记录里叫 postOffice，参考库里叫 name
-        keys.add(collectedKey({
+        const row = {
           province: rec.province,
           district: rec.district,
           name: rec.postOffice,
           postalCode: rec.postalCode,
-        }));
+        };
+        // 两套键都放进去：大陆记录命中 collectedKey，港澳台记录命中 regionCollectedKey
+        keys.add(collectedKey(row));
+        keys.add(regionCollectedKey(row));
       }
     }
     _collectedKeys = keys;
@@ -448,7 +465,7 @@
   /** 判断参考库网点是否已被收集（SPB 不参与） */
   function isCollected(rec) {
     if (rec.source !== 'post') return false;
-    return getCollectedKeys().has(collectedKey(rec));
+    return getCollectedKeys().has(matchKey(rec));
   }
 
   // ============================================================
@@ -490,12 +507,13 @@
   function findCollectedRecords(po) {
     if (!po || po.source !== 'post' || po.historical) return [];
     if (typeof RecordStore === 'undefined') return [];
-    const key = collectedKey(po);
-    return RecordStore.getAll().filter((rec) => collectedKey({
+    const key = matchKey(po);
+    return RecordStore.getAll().filter((rec) => matchKey({
       province: rec.province,
       district: rec.district,
       name: rec.postOffice,
       postalCode: rec.postalCode,
+      regionOffice: po.regionOffice,
     }) === key);
   }
 
@@ -512,7 +530,9 @@
 
     if (titleEl) titleEl.textContent = '网点详情';
 
-    const sourceLabel = rec.source === 'post' ? 'POST（邮政官网）' : 'SPB（邮管局）';
+    const sourceLabel = rec.regionOffice
+      ? `${rec.regionLabel || '港澳台'} · ${rec.typeLabel || '网点'}`
+      : (rec.source === 'post' ? 'POST（邮政官网）' : 'SPB（邮管局）');
     const collected = findCollectedRecords(rec);
 
     if (headEl) {
@@ -541,6 +561,8 @@
     const rows = [];
     rows.push(row('所在地', [rec.province, rec.city, rec.district].filter(Boolean).join(' / ')));
     rows.push(row('邮政编码', rec.postalCode));
+    if (rec.code) rows.push(row(rec.codeLabel || '代号', rec.code));
+    if (rec.jurisdiction) rows.push(row('管辖邮局', rec.jurisdiction));
     rows.push(row('地址', rec.address,
       rec.source === 'spb'
         ? 'SPB 数据源不含地址，可点下方详情链接查看邮管局备案信息'
@@ -1004,11 +1026,14 @@
     initCopyButtons();
   }
 
-  // 对外接口（app.js 使用）
+  // 对外接口（app.js / postal-page.js 使用）
   window.Tools = {
     refreshPOSearch: () => refreshPOSearch(),
     refreshRandomPO: () => refreshRandomPO(),
     closePODetail: () => closePODetail(),
+    openPODetail: (rec) => openPODetail(rec),
+    isCollected: (rec) => isCollected(rec),
+    findCollectedRecords: (rec) => findCollectedRecords(rec),
   };
 
   // DOM 就绪后初始化

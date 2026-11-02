@@ -1,7 +1,7 @@
 // 发布版不弹控制台窗口；调试版保留，方便看 Node 服务器的日志。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-//! 新一代日戳管理系统 — Tauri 2 外壳
+//! 新一代集邮管理系统 — Tauri 2 外壳
 //! ====================================
 //! 职责刻意压到最小：拉起已存在的 Node 服务器，然后把窗口指向它。
 //! 之所以能这么薄，是因为服务器逻辑早已从 Electron 的 main.js 抽到 server.js，
@@ -72,7 +72,7 @@ fn main() -> Result<()> {
             // ---- 建窗口 ----
             let url = server.url();
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url.parse()?))
-                .title("新一代日戳管理系统")
+                .title("新一代集邮管理系统")
                 .inner_size(1400.0, 900.0)
                 .min_inner_size(1024.0, 700.0)
                 .center()

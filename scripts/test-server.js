@@ -50,7 +50,7 @@ async function main() {
     const index = await get(base, '/');
     check('/ 返回 200 且是 HTML', () => {
       assert.strictEqual(index.status, 200);
-      assert.ok(index.text.includes('新一代日戳管理系统'));
+      assert.ok(index.text.includes('新一代集邮管理系统'));
       assert.ok(index.headers.get('content-type').includes('text/html'));
     });
     const css = await get(base, '/css/style.css');

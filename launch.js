@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 浏览器启动器 — 新一代日戳管理系统
+ * 浏览器启动器 — 新一代集邮管理系统
  * ====================================
  * 用系统浏览器（默认 Chrome）当窗口，取代 Electron 外壳。
  *
@@ -160,7 +160,7 @@ async function main() {
   const url = `http://${HOST}:${opts.port}`;
 
   console.log('============================================================');
-  console.log(' 新一代日戳管理系统 — 浏览器模式');
+  console.log(' 新一代集邮管理系统 — 浏览器模式');
   console.log(` 项目目录: ${ROOT}`);
   console.log(` 数据目录: ${path.relative(ROOT, PROFILE_DIR)}`);
   console.log('============================================================');

@@ -146,6 +146,36 @@ body:has(.modal-overlay.active) #app-content { overflow: hidden; }
 .nav-item:hover { background: #f1f8f2; color: #00991A; }
 .nav-item.active { background: #e8f5e9; color: #007A15; font-weight: 600; }
 .nav-item-top { margin-top: 4px; font-weight: 600; color: #333; }
+/* 港澳台网点：数据管理下的可折叠二级导航；父项与普通 nav-item 外观一致 */
+.nav-sub-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.nav-sub-group[hidden] { display: none; }
+.nav-caret {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  margin-left: auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  opacity: .55;
+  transition: transform .15s;
+}
+.nav-parent[aria-expanded="true"] .nav-caret { transform: rotate(90deg); }
+.nav-sub-item {
+  padding-left: 30px;
+  font-size: 12px;
+  color: #666;
+}
+.nav-sub-item .nav-ico {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  opacity: .55;
+}
 .nav-ico {
   width: 16px;
   height: 16px;
@@ -950,6 +980,47 @@ body:has(.modal-overlay.active) #app-content { overflow: hidden; }
 #po-search-container {
   display: flex;
   flex-direction: column;
+}
+
+/* ===== 港澳台网点 · 网点查询 / 数据抓取 ===== */
+#postal-search-page,
+#postal-crawler-page {
+  display: none;
+  flex-direction: column;
+  padding: 20px 24px;
+  min-height: calc(100vh - 100px);
+}
+#postal-search-header,
+#postal-crawler-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+#postal-search-header h2,
+#postal-crawler-header h2 {
+  font-size: 20px;
+  font-weight: 600;
+  color: #333;
+}
+#postal-search-container,
+#postal-crawler-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.postal-table td {
+  vertical-align: top;
+  line-height: 1.45;
+}
+.postal-table td.postal-addr {
+  max-width: 420px;
+  word-break: break-word;
+}
+.postal-table td:nth-child(4),
+.postal-table td:nth-child(5),
+.postal-table td:nth-child(7) {
+  white-space: nowrap;
 }
 .tool-card {
   background: #fff;

@@ -23,6 +23,15 @@
   const appShell = $('app-shell');
   const btnSidebarToggle = $('btn-sidebar-toggle');
   const navItems = Array.from(document.querySelectorAll('#sidebar .nav-item'));
+  const postalNavToggle = $('btn-toggle-postal');
+  const postalSubnav = $('postal-subnav');
+
+  /** 港澳台网点默认折叠；父项与普通 nav-item 同款，点击展开/收起子项 */
+  function setPostalNavExpanded(expanded) {
+    if (!postalNavToggle || !postalSubnav) return;
+    postalNavToggle.setAttribute('aria-expanded', String(!!expanded));
+    postalSubnav.hidden = !expanded;
+  }
 
   /** 折叠状态只落在 #app-shell 的类上，布局与动画都在 CSS 里 */
   function setSidebarCollapsed(collapsed, persist) {
@@ -47,9 +56,17 @@
     // 窄屏默认折叠，否则抽屉会直接盖住内容
     const collapsed = stored === null ? window.innerWidth <= 900 : stored === '1';
     setSidebarCollapsed(collapsed, false);
+    // 港澳台网点二级菜单默认收起
+    setPostalNavExpanded(false);
     // 启动即地图总览
     setActiveNav('overview');
   })();
+
+  if (postalNavToggle && postalSubnav) {
+    postalNavToggle.addEventListener('click', () => {
+      setPostalNavExpanded(postalNavToggle.getAttribute('aria-expanded') !== 'true');
+    });
+  }
 
   btnSidebarToggle.addEventListener('click', () => {
     setSidebarCollapsed(!appShell.classList.contains('sidebar-collapsed'), true);
@@ -154,6 +171,14 @@
   RecordStore.onChange(() => {
     refreshAllViews();
     if (recordsPageOpen) renderRecordsTable(recordsSearch.value);
+    // 新增/修改记录后，港澳台查询页的「已收集」标绿要立即跟着变
+    if (postalSearchPageOpen && typeof PostalPage !== 'undefined') PostalPage.refreshSearch();
+  });
+
+  // 港澳台抓取完成/重新载入后，首页排名表的「总计」要跟着变
+  window.addEventListener('postal-data-changed', () => {
+    refreshStatsOnly();
+    if (postalSearchPageOpen && typeof PostalPage !== 'undefined') PostalPage.refreshSearch();
   });
 
   // ============================================================
@@ -164,12 +189,16 @@
   let toolsPageOpen = false;
   let poSearchPageOpen = false;
   let crawlerPageOpen = false;
+  let postalSearchPageOpen = false;
+  let postalCrawlerPageOpen = false;
   let mailPageOpen = false;
   let meterPageOpen = false;
   let galleryPageOpen = false;
   const toolsPage = $('tools-page');
   const poSearchPage = $('po-search-page');
   const crawlerPage = $('crawler-page');
+  const postalSearchPage = $('postal-search-page');
+  const postalCrawlerPage = $('postal-crawler-page');
   const mailPage = $('mail-page');
   const meterPage = $('meter-page');
   const galleryPage = $('gallery-page');
@@ -210,6 +239,8 @@
     if (toolsPageOpen) hideToolsPage();
     if (poSearchPageOpen) hidePOSearchPage();
     if (crawlerPageOpen) hideCrawlerPage();
+    if (postalSearchPageOpen) hidePostalSearchPage();
+    if (postalCrawlerPageOpen) hidePostalCrawlerPage();
     if (mailPageOpen) hideMailPage();
     if (meterPageOpen) hideMeterPage();
     if (galleryPageOpen) hideGalleryPage();
@@ -547,6 +578,8 @@
     if (recordsPageOpen) hideRecordsPage();
     if (poSearchPageOpen) hidePOSearchPage();
     if (crawlerPageOpen) hideCrawlerPage();
+    if (postalSearchPageOpen) hidePostalSearchPage();
+    if (postalCrawlerPageOpen) hidePostalCrawlerPage();
     if (mailPageOpen) hideMailPage();
     if (meterPageOpen) hideMeterPage();
     if (galleryPageOpen) hideGalleryPage();
@@ -577,6 +610,8 @@
     if (recordsPageOpen) hideRecordsPage();
     if (toolsPageOpen) hideToolsPage();
     if (crawlerPageOpen) hideCrawlerPage();
+    if (postalSearchPageOpen) hidePostalSearchPage();
+    if (postalCrawlerPageOpen) hidePostalCrawlerPage();
     if (mailPageOpen) hideMailPage();
     if (meterPageOpen) hideMeterPage();
     if (galleryPageOpen) hideGalleryPage();
@@ -607,6 +642,8 @@
     if (recordsPageOpen) hideRecordsPage();
     if (toolsPageOpen) hideToolsPage();
     if (poSearchPageOpen) hidePOSearchPage();
+    if (postalSearchPageOpen) hidePostalSearchPage();
+    if (postalCrawlerPageOpen) hidePostalCrawlerPage();
     if (mailPageOpen) hideMailPage();
     if (meterPageOpen) hideMeterPage();
     if (galleryPageOpen) hideGalleryPage();
@@ -631,6 +668,69 @@
   $('btn-crawler-back').addEventListener('click', hideCrawlerPage);
 
   // ============================================================
+  // 港澳台网点 · 网点查询 / 数据抓取
+  // ============================================================
+  function showPostalSearchPage() {
+    postalSearchPageOpen = true;
+    setPostalNavExpanded(true);
+    if (recordsPageOpen) hideRecordsPage();
+    if (toolsPageOpen) hideToolsPage();
+    if (poSearchPageOpen) hidePOSearchPage();
+    if (crawlerPageOpen) hideCrawlerPage();
+    if (postalCrawlerPageOpen) hidePostalCrawlerPage();
+    if (mailPageOpen) hideMailPage();
+    if (meterPageOpen) hideMeterPage();
+    if (galleryPageOpen) hideGalleryPage();
+    $('main-container').style.display = 'none';
+    $('btn-add-record-fab').style.display = 'none';
+    postalSearchPage.style.display = 'flex';
+    if (typeof PostalPage !== 'undefined') PostalPage.refreshSearch();
+    setActiveNav('postal-search');
+  }
+
+  function hidePostalSearchPage() {
+    postalSearchPageOpen = false;
+    postalSearchPage.style.display = 'none';
+    $('main-container').style.display = '';
+    $('btn-add-record-fab').style.display = '';
+    setActiveNav('overview');
+  }
+
+  function showPostalCrawlerPage() {
+    postalCrawlerPageOpen = true;
+    setPostalNavExpanded(true);
+    if (recordsPageOpen) hideRecordsPage();
+    if (toolsPageOpen) hideToolsPage();
+    if (poSearchPageOpen) hidePOSearchPage();
+    if (crawlerPageOpen) hideCrawlerPage();
+    if (postalSearchPageOpen) hidePostalSearchPage();
+    if (mailPageOpen) hideMailPage();
+    if (meterPageOpen) hideMeterPage();
+    if (galleryPageOpen) hideGalleryPage();
+    $('main-container').style.display = 'none';
+    $('btn-add-record-fab').style.display = 'none';
+    postalCrawlerPage.style.display = 'flex';
+    if (typeof PostalPage !== 'undefined') PostalPage.refreshCrawler();
+    setActiveNav('postal-crawler');
+  }
+
+  function hidePostalCrawlerPage() {
+    postalCrawlerPageOpen = false;
+    postalCrawlerPage.style.display = 'none';
+    $('main-container').style.display = '';
+    $('btn-add-record-fab').style.display = '';
+    // 后台状态轮询继续，服务端作业完成时仍会刷新查询与首页统计；
+    // 再次进入页面只刷新文件列表与状态展示。
+    if (typeof PostalPage !== 'undefined') PostalPage.suspend();
+    setActiveNav('overview');
+  }
+
+  $('btn-show-postal-search').addEventListener('click', showPostalSearchPage);
+  $('btn-postal-search-back').addEventListener('click', hidePostalSearchPage);
+  $('btn-show-postal-crawler').addEventListener('click', showPostalCrawlerPage);
+  $('btn-postal-crawler-back').addEventListener('click', hidePostalCrawlerPage);
+
+  // ============================================================
   // 邮资机戳页面（独立数据表，与日戳记录互不影响）
   // ============================================================
   function showMeterPage() {
@@ -639,6 +739,8 @@
     if (toolsPageOpen) hideToolsPage();
     if (poSearchPageOpen) hidePOSearchPage();
     if (crawlerPageOpen) hideCrawlerPage();
+    if (postalSearchPageOpen) hidePostalSearchPage();
+    if (postalCrawlerPageOpen) hidePostalCrawlerPage();
     if (mailPageOpen) hideMailPage();
     $('main-container').style.display = 'none';
     $('btn-add-record-fab').style.display = 'none';
@@ -668,6 +770,8 @@
     if (toolsPageOpen) hideToolsPage();
     if (poSearchPageOpen) hidePOSearchPage();
     if (crawlerPageOpen) hideCrawlerPage();
+    if (postalSearchPageOpen) hidePostalSearchPage();
+    if (postalCrawlerPageOpen) hidePostalCrawlerPage();
     if (mailPageOpen) hideMailPage();
     if (meterPageOpen) hideMeterPage();
     $('main-container').style.display = 'none';
@@ -699,6 +803,8 @@
     if (toolsPageOpen) hideToolsPage();
     if (poSearchPageOpen) hidePOSearchPage();
     if (crawlerPageOpen) hideCrawlerPage();
+    if (postalSearchPageOpen) hidePostalSearchPage();
+    if (postalCrawlerPageOpen) hidePostalCrawlerPage();
     if (mailPageOpen) hideMailPage();
     if (meterPageOpen) hideMeterPage();
     if (galleryPageOpen) hideGalleryPage();
@@ -739,6 +845,8 @@
     if (toolsPageOpen) hideToolsPage();
     if (poSearchPageOpen) hidePOSearchPage();
     if (crawlerPageOpen) hideCrawlerPage();
+    if (postalSearchPageOpen) hidePostalSearchPage();
+    if (postalCrawlerPageOpen) hidePostalCrawlerPage();
     if (meterPageOpen) hideMeterPage();
     if (galleryPageOpen) hideGalleryPage();
     $('main-container').style.display = 'none';
@@ -862,6 +970,8 @@
       else if (toolsPageOpen) hideToolsPage();
       else if (poSearchPageOpen) hidePOSearchPage();
       else if (crawlerPageOpen) hideCrawlerPage();
+      else if (postalSearchPageOpen) hidePostalSearchPage();
+      else if (postalCrawlerPageOpen) hidePostalCrawlerPage();
       else if (mailPageOpen) hideMailPage();
       else if (meterPageOpen) hideMeterPage();
       else if (galleryPageOpen) hideGalleryPage();
@@ -1058,6 +1168,10 @@
   // 启动时从 base 目录自动导入网点数据
   // ============================================================
   const BASE_SIG_KEY = 'poref_base_signature';
+  // 港澳台 base 文件与大陆 post*/spb* 字段不同，不能交给 PODatabase 导入
+  const POSTAL_BASE_FILES = new Set([
+    'posthk+base.csv', 'postmo+base.csv', 'posttw+base.csv', 'agencytw+base.csv',
+  ]);
 
   /**
    * 拉取 base/base_old.csv（历史归档，单一文件、POST/SPB 混排）。
@@ -1086,9 +1200,10 @@
       return { error: '无法读取 base 目录: ' + e.message };
     }
 
-    // 只认网点数据文件（post*/spb*）；base_old.csv 单独处理，不算网点数据
+    // 只认大陆网点数据文件（post*/spb*）；base_old.csv 与港澳台 +base 文件单独处理
     const dataFiles = (Array.isArray(files) ? files : []).filter((f) => {
       const lower = String(f.name || '').toLowerCase();
+      if (POSTAL_BASE_FILES.has(lower)) return false;
       return lower.startsWith('post') || lower.startsWith('spb');
     });
 
@@ -1171,6 +1286,15 @@
   try {
     // 先水合 PO 参考库（IndexedDB → 内存镜像），之后所有查询 API 都是同步的
     await PODatabase.ready();
+
+    // 港澳台四份 CSV 独立于 base 参考库；先载入，首页排名表才能拿到实际总数
+    if (typeof PostalStore !== 'undefined') {
+      try {
+        await PostalStore.ready();
+      } catch (e) {
+        console.error('[Postal] 港澳台网点数据载入失败:', e);
+      }
+    }
 
     // 初始化表单
     EntryForm.init();

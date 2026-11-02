@@ -1,4 +1,4 @@
-# 新一代日戳管理系统
+# 新一代集邮管理系统
 
 面向集邮者的日戳（邮戳）收藏管理桌面应用，同时内置一套全国邮政网点数据的抓取与比对工具链。
 
@@ -18,9 +18,10 @@
 | 日戳录入 | 省 / 市 / 县三级联动表单，机构号自动生成，支持戳号增删、邮资机与风景日戳条件字段 |
 | 邮资机戳 | 独立于日戳记录的一张表（侧边栏「数据管理 · 邮资机戳」），列示型号 / 编号 / 上环 / 下环 / 表头 / 打印日期 / 打印网点 / 备注；打印网点按 省 → 市 → 县 选定后再填名称，候选建议与「录入日戳」同源（本机日戳记录 + `base` 参考库）；列表可按要素升降序排序。首次启动自动把日戳记录里已填的邮资机信息移植过来，之后两边互不影响，可手动「从日戳记录移植」补拉 |
 | 地图可视化 | ECharts 中国地图着色，支持省 → 市下钻，GeoJSON 全部本地加载 |
-| 统计面板 | 收集总量与省 / 地 / 县覆盖数、省份排名表、采集日历热力图。排名表的「总计」不是写死的估算值：取自 `base` 参考库里该省的邮政官网（POST）网点数，参考库导入 / 对比刷新后自动重算；没有官网数据的省份（未抓取，如台港澳）退回内置估算。右下角「数据更新」显示参考库最后一次刷新的日期 |
+| 统计面板 | 收集总量与省 / 地 / 县覆盖数、省份排名表、采集日历热力图。排名表的「总计」不是写死的估算值：大陆省份取自 `base` 参考库里该省的邮政官网（POST）网点数，港澳台取自 `PostalStore`（香港 / 澳门 / 台湾邮局 + 代办所）；参考库导入、对比刷新或港澳台抓取完成后自动重算。右下角「数据更新」显示参考库最后一次刷新的日期 |
 | 工具箱 | 机构号生成器、信函条码校验与生成、条码展示、随机网点、网点检索 |
 | 网点检索 | 在 `base` 参考库中按行政区划 / 来源 / 关键字检索网点（含 `base_old` 历史归档，带「历史」徽标）。**单击「网点名称」弹出该网点的详细信息**：地址、开办业务、邮管局详情链接、历史归档原因与时间，以及与它匹配的收集记录（机构号 / 盖销日期 / 戳号） |
+| 港澳台网点 | 侧边栏「数据管理 · 港澳台网点」下的「网点查询」与「数据抓取」（父项默认折叠）。查询支持香港 / 澳门 / 台湾、邮局 / 代办所、关键字过滤，局名已收集标绿，详情弹窗复用网点检索；抓取在服务端运行 `postal/` 四站采集，日志回传页面，完成后自动刷新查询与首页总数，并询问是否把结果写入 `base/*+base.csv`。台湾总数 = 邮局 + 代办所 |
 | 邮戳图片 | 侧边栏「数据管理 · 邮戳图片」：把日戳记录里的图片（`photos`）摊平成**正方形照片画廊**，可缩略浏览、按省份筛选、按关键字搜索、按盖销日期 / 邮局名 / 录入时间排序；单击任一展示区打开大图与记录详情，← / → 逐张翻阅，并可直接「编辑记录」 |
 | 国际退信 | 独立于「待发 / 在途 / 妥收」的一张表（侧边栏「邮件管理 · 国际退信」），记录一件寄往境外的邮件被退回直至收回的全过程：寄达国家（地区）中文名 / 英文名 / 二字代码（同源 `js/countries.js`，选候选或填代码自动补齐三项）、寄出方式（航空 / SAL / 水陆路）、邮件号码（13 位）、寄出 / 寄达 / 返回 / 收回 四个时间、境外接收 / 出口互换局、邮路信息（可增删途经点，相邻两点之间可填运送信息）、备注。邮路与备注不占列，单击「寄达国家（地区）」单元格弹窗查看；列表可按要素升降序排序，支持 JSON 导出 / 导入 |
 | 邮件查询 | 「邮件管理 · 查询」嵌入 17TRACK 官方 `externalcall.js` 组件，输入运单号即查（**需联网**，组件在首次进入该页时懒加载） |
@@ -95,6 +96,94 @@
    精确 → 归一化 → 疑似（公共子串）→ 模糊 → 跨区县末次，输出可人工核对的报告。
    可选启用模糊匹配并设置阈值（默认 0.8）。
 
+### 港澳台网点采集（应用内 + CLI）
+
+省级数据之外，`postal/` 模块单独采集四类网点，输出带日期后缀的四份 CSV
+（**UTF-8 with BOM、CRLF**，与省级文件的 GBK 不同，便于 Excel 直接打开）：
+
+| 文件 | 字段 | 实际数据来源 |
+| --- | --- | --- |
+| `output/posthk-YYYYMMDD.csv` | 地区,局名,代号,地址 | 香港邮政 `POST /api1/v1/post-office/all-post-office`（region → district → office 嵌套 JSON） |
+| `output/postmo-YYYYMMDD.csv` | 名称,地址 | 澳门邮电局 `GET /apis/web/post-office/list?culture=zh-CN&mode=None`（需 `X-Web-Code: FIL`） |
+| `output/posttw-YYYYMMDD.csv` | 邮递区号,局名,电脑局名,地址 | 台湾 `index_all.html` 的完整表格（当前 1277 笔，单页返回） |
+| `output/agencytw-YYYYMMDD.csv` | 邮递区号,局名,地址,管辖邮局 | 台湾 `index.jsp?ID=1906`，每页 10 笔，按 `topage` POST 翻页（当前 371 笔 / 38 页） |
+
+2026-11-02 实际运行结果：香港 119 条、澳门 17 条、台湾普通邮局 1277 条、台湾代办所 371 条。
+官方页面数量会变化，程序每次按运行时页面重新读取；参考值只用于差异告警，不决定输出条数。
+
+应用内入口：**数据管理 → 港澳台网点 → 网点查询 / 数据抓取**。
+「港澳台网点」默认折叠，点击后展开两个子项；父项与同级的「全部记录 / 网点检索 / 数据抓取」
+使用同一套 `nav-item` 外观。
+
+- **网点查询**：按地区（香港 / 澳门 / 台湾）、类型（邮局 / 代办所）和关键字过滤；
+  表格展示地区、类型、局名、代号或电脑局名、邮递区号、地址、管辖邮局。
+  已录入日戳的网点按「省 + 局名」宽松匹配标绿（港澳没有真实邮编，台湾录入记录
+  也可能缺区县/邮编），单击局名可打开与大陆网点检索一致的详情弹窗。
+  查询数据优先读 `base/{prefix}+base.csv`；base 里还没有对应文件时，退回
+  `output` 中最新日期的结果。
+- **数据抓取**：勾选数据源、设置请求间隔 / 超时 / 重试后启动；服务端在
+  `server.js` 内直接调用 `Postal.runAll()`，日志逐行回传页面。离开抓取页后状态轮询
+  仍在后台继续（不中断服务端作业），抓取完成后自动 `PostalStore.reload()`，刷新查询页
+  与首页排名表的总数。
+- **更新 base**：每次抓取结束（含部分站点成功）后，页面会询问是否把本次成功写出的
+  文件复制到 `base/posthk+base.csv`、`base/postmo+base.csv`、`base/posttw+base.csv`、
+  `base/agencytw+base.csv`。选择「取消」只保留 output，不修改 base；失败站点不会覆盖
+  旧 base。`base/` 中新增的港澳台文件不会进入大陆 `PODatabase` 的导入/对比流程。
+  注意：查询优先读 base，所以取消更新后，已有 base 的站点仍显示旧数据；只有 base
+  尚不存在的站点才会退回本次 output。
+- 四份 CSV 由前端 `js/postal-store.js` 读取为独立的内存库，**不导入**
+  `PODatabase`，避免 `base/` 整体 replace 时被清掉；`data.js` 只合并它们的省级计数。
+  台湾省总数 = 邮局 1277 + 代办所 371 = **1648**。
+
+```bash
+npm run crawl:postal
+# 或
+node scripts/crawl-postal.js
+node scripts/crawl-postal.js --only=hk,mo
+node scripts/crawl-postal.js --dry-run
+node scripts/crawl-postal.js --delay=0.5 --timeout=30 --attempts=3
+node scripts/crawl-postal.js --date=20261102
+```
+
+| 参数 | 说明 |
+| --- | --- |
+| `--only=hk,mo,tw,agencytw` | 只跑指定站点 |
+| `--output-dir=<dir>` | 输出目录，默认项目 `output/` |
+| `--delay=<秒>` | 请求间隔，默认 0.4 |
+| `--timeout=<秒>` | 单次请求超时，默认 30 |
+| `--attempts=<n>` | 最大尝试次数，默认 3 |
+| `--dry-run` | 只采集校验，不写文件 |
+| `--date=YYYYMMDD` | 指定批次日期，默认当天 |
+
+CLI 只负责写 `output/`，不会弹出 base 更新确认；需要更新 base 时请在应用内抓取，
+或在确认结果后手工复制为 `base/{prefix}+base.csv`。应用内抓取每次结束都会询问。
+
+实现约定：
+
+- 四个采集器在 `postal/collectors/` 下独立维护，公共的 HTTP、HTML 表格、CSV、
+  校验与日志在 `postal/` 下；入口是 `postal/index.js`，复制到 base 的逻辑在
+  `postal/base-updater.js`。
+- 项目没有安装 `axios` / `cheerio` / `playwright` / `csv-stringify`，本模块**不新增依赖**：
+  HTTP 走 Node 内置 `http/https`，表格用范围很窄的正则解析，CSV 按 RFC 4180 自行转义。
+- 香港站点当前走公开 JSON 接口，不需要浏览器；若接口返回 403 会停止重试并保留旧文件，
+  不会把 403 当空数据。
+- 澳门页面本身是繁体（`zh-TW`），但接口支持 `culture=zh-CN`，输出取简体版本；
+  `alternateName`（如「郵政總」）是简称，不作为名称，电话 / 办公时间 / 地图链接不当地址。
+- 台湾普通邮局按项目约定只保留**一个**电脑局相关列，列名 `电脑局名`，取源表的
+  `電腦局名`（如 `臺北901支`）；源表的 `000100-6` 这类电脑局号不另设列。
+- 代办所当前页面标注 371 笔，与文档里的 377 笔参考值不同：程序按运行时页面为准，
+  差异写日志，不直接判定失败；只有明显不完整（低于页面标注的 95%，或低于参考值 90%）
+  或某页重试后仍失败时才拒绝覆盖。
+- 单站失败不影响其它三站；失败时**不写文件**，保留上一次的有效结果。CSV 先写临时文件再
+  `rename` 原子替换。Windows 上如果目标 CSV 正被 Excel 占用，替换会失败并保留旧文件，
+  关闭 Excel 后重跑即可。
+- 这四份文件与省级 POST/SPB 文件的字段结构不同，`crawler-engine.js` 的 `getFilePrefix`
+  已按前缀排除 `posthk-*` / `postmo-*` / `posttw-*` / `agencytw-*` 及
+  `base/*+base.csv`，避免被当成大陆前缀参与对比或写入 `base/`。
+  它们也不会自动导入 `PODatabase`；应用内由 `PostalStore` 独立读取。
+- `js/data.js` 的港澳台静态估算已改为实际值（香港 119、澳门 17、台湾 1648）；
+  运行时优先使用 `PostalStore.getProvinceCounts()` 的实时计数，台湾 = 邮局 + 代办所。
+
 ---
 
 ## 环境要求
@@ -168,6 +257,8 @@ postmark/
 │   ├── meterstore.js     #   邮资机戳独立数据表（localStorage CRUD + 从日戳记录移植）
 │   ├── meter-list.js     #   邮资机戳列表与录入界面
 │   ├── postodb.js        #   网点参考库（导入 CSV、市名校正、自动填充）
+│   ├── postal-store.js   #   港澳台四份 CSV 的独立内存库（查询 / 计数 / 标绿）
+│   ├── postal-page.js    #   港澳台「网点查询」与「数据抓取」页面
 │   ├── returnstore.js    #   国际退信独立数据表（localStorage CRUD + 邮路结构）
 │   ├── return-list.js    #   国际退信列表、录入表单与寄达地详情弹窗
 │   ├── stats.js          #   统计面板
@@ -178,9 +269,18 @@ postmark/
 ├── crawler-match.js      # 横向对比匹配引擎（纯函数）
 ├── crawler-intelligent.js# 智能判别对比（txt_compare 之后的语义级分析）
 ├── crawler-cities.js     # 区县名 → 市名 省级反查表（自动生成，勿手改）
+├── postal/               # 港澳台四类网点采集器（应用内作业 + CLI，见「港澳台网点采集」）
+│   ├── index.js          #   入口：runAll / 站点与字段配置
+│   ├── http-client.js    #   内置 http/https 请求 + 重试 / 重定向 / 解码
+│   ├── html-parser.js    #   表格行 / 单元格 / HTML 实体
+│   ├── csv-exporter.js   #   UTF-8 BOM CSV 与原子写入
+│   ├── base-updater.js   #   用户确认后把 output 结果复制到 base/*+base.csv
+│   ├── validators.js     #   必填 / 邮递区号 / 去重 / 数量核验
+│   ├── logger.js         #   控制台 + output/postal-crawl-*.log
+│   └── collectors/       #   hk.js / mo.js / tw.js / agencytw.js
 ├── img-export.js         # 图片落盘：目录解析 / 命名兜底 / 原子写入 / 删除
 ├── txt_compare.exe       # 外部对比工具（旧版 vs 新版 CSV 差异）
-├── base/                 # 基准数据：31 省 × (POST + SPB) = 62 个 CSV
+├── base/                 # 基准数据：31 省 × (POST + SPB) = 62 个 CSV；另有港澳台 +base 文件
 ├── output/               # 抓取产出与报告（不入库，见 .gitignore）
 │   └── images/           #   日戳图片（可用 POSTMARK_IMAGES_DIR 改到别处）
 ├── geo/                  # 本地 GeoJSON，按行政区划代码命名
@@ -201,6 +301,10 @@ postmark/
   列见下方「CSV 格式」。它由「对比并更新 base」自动维护，不需要手工编辑。
 - `output/` 是**动态产出**，抓取结果为 `post{缩写}-{日期}.csv` / `spb{缩写}-{日期}.csv`，
   另含 `compare_report_*.txt`、`cross_compare_*.txt`、`intelligent_report_*.txt` 三类报告。
+  港澳台四类网点同样输出带日期的 `posthk-YYYYMMDD.csv` / `postmo-YYYYMMDD.csv` /
+  `posttw-YYYYMMDD.csv` / `agencytw-YYYYMMDD.csv`（UTF-8 with BOM），以及
+  `postal-crawl-*.log` 运行日志；用户确认更新后，对应结果复制为
+  `base/posthk+base.csv` 等四个文件。
   对比时还会生成 `output/_refstage/` —— 应用后的 base 快照（当前库 + `base_old.csv`），
   供渲染进程刷新应用内参考库；它是可重建的中间产物，下一次对比会整目录重写。
   该目录已被 `.gitignore` 忽略。
@@ -210,13 +314,19 @@ postmark/
 
 ### CSV 格式
 
-所有 CSV 均为 **GBK 编码**（与数据源、Windows 环境下的 Excel 保持一致）。
+省级抓取与 base 的 CSV 均为 **GBK 编码**（与数据源、Windows 环境下的 Excel 保持一致）；
+港澳台四份独立 CSV 为 **UTF-8 with BOM**、CRLF 换行（见「港澳台网点采集」）。
 
 | 来源 | 列 |
 | --- | --- |
 | POST（邮政官网） | `省, 市, 区/市/县, 网点名称, 邮编, 地址` |
 | SPB（邮管局备案） | `所属省, 所属市, 所属县, 场所名称, 开办业务, 详情链接` |
 | `base/base_old.csv` | `来源, 省, 市, 区/市/县, 网点名称, 邮编, 地址, 开办业务, 详情链接, 归档原因, 归档时间` |
+| `output/posthk-YYYYMMDD.csv` | `地区, 局名, 代号, 地址` |
+| `output/postmo-YYYYMMDD.csv` | `名称, 地址` |
+| `output/posttw-YYYYMMDD.csv` | `邮递区号, 局名, 电脑局名, 地址` |
+| `output/agencytw-YYYYMMDD.csv` | `邮递区号, 局名, 地址, 管辖邮局` |
+| `base/posthk+base.csv` 等 | 与对应 output 相同；由用户在抓取完成后确认复制 |
 
 `base_old.csv` 把两个来源并成一张表：`来源` 列取 `post` / `spb`，不适用的列留空
 （POST 行没有开办业务/详情链接，SPB 行没有邮编/地址）；`归档原因` 取
@@ -331,6 +441,8 @@ node scripts/test-image-export.js      # 图片落盘接口（/api/images/*）�
 node scripts/test-image-core.js        # 图片处理核心：EXIF 八向归一化、任意角度旋转、裁剪、增强、导出
                                        # （含逐像素比对：预览与两条渲染路径必须一致）
 node scripts/test-image-e2e.js         # 端到端：在真实应用页面里走完 选图→编辑→保存→存进记录→读回
+node scripts/test-postal-crawl.js      # 港澳台采集器纯函数：CSV 转义 / 四站字段映射 / 去重 / 数量核验
+node scripts/crawl-postal.js           # 港澳台四类网点实际采集（联网），详见「港澳台网点采集」
 node scripts/smoke-app-page.js         # 入口页自检：真实 index.html 能否加载全部模块、图片区是否就位
 node scripts/check-fixture.js <测试脚本> FIXTURE_BODY   # 检查测试页面模板的语法（改完测试先跑这个）
 ```

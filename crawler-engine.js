@@ -69,6 +69,15 @@ const PROVINCES = [
 
 const COMPARE_EXE_NAME = 'txt_compare.exe';
 
+/**
+ * 港澳台四份 CSV（postal/ 模块产出）使用各自的字段结构，不属于 POST/SPB
+ * 的省级对比数据。它们与省级文件同放在 output/ 根目录，getFilePrefix 按文件名
+ * 显式排除，避免被当成 posthk / postmo / posttw 前缀参与对比或写入 base。
+ */
+// 港澳台网点 CSV 的前缀（含 output 的 -YYYYMMDD 与 base 的 +base 后缀）。
+// 它们字段结构与省级 POST/SPB 不同，不能进入 scanByPrefix/对比/base 流程。
+const POSTAL_CSV_PREFIXES = new Set(['posthk', 'postmo', 'posttw', 'agencytw']);
+
 // 通用请求头（不含 Referer，适用于邮政 API）
 const HEADERS = {
   'User-Agent':
@@ -1294,7 +1303,11 @@ function writeBaseOld(filepath, entries) {
 
 /** 从文件名中提取前缀，如 postbj, spbsh */
 function getFilePrefix(filename) {
-  const m = /^(post|spb)([a-z]+)/.exec(filename);
+  const name = String(filename || '');
+  // 先按 - / + 截断，统一识别 posthk-20261102.csv、posthk+base.csv、posthk.csv
+  const stem = name.toLowerCase().replace(/\.csv$/i, '').split(/[-+]/)[0];
+  if (POSTAL_CSV_PREFIXES.has(stem)) return null;
+  const m = /^(post|spb)([a-z]+)/.exec(name);
   return m ? m[0] : null;
 }
 

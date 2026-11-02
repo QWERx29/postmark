@@ -1,5 +1,5 @@
 /**
- * Electron 外壳 — 新一代日戳管理系统
+ * Electron 外壳 — 新一代集邮管理系统
  * ====================================
  * 本文件只做「外壳」的事：开一个窗口，把本地服务器指向它。
  * 服务器与爬虫接口都在 server.js（纯 Node，不依赖 electron），
@@ -77,7 +77,7 @@ function createWindow() {
     height: 900,
     minWidth: 1024,
     minHeight: 700,
-    title: '新一代日戳管理系统',
+    title: '新一代集邮管理系统',
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -140,7 +140,7 @@ app.whenReady().then(async () => {
       : `本地服务器启动失败：\n${err && err.message ? err.message : err}`;
     console.error('[Postmark]', msg);
     reportStartup('error', { reason: busy ? 'EADDRINUSE' : String(err && err.message) });
-    try { dialog.showErrorBox('新一代日戳管理系统 — 启动失败', msg); } catch (e) { /* 无 GUI 时忽略 */ }
+    try { dialog.showErrorBox('新一代集邮管理系统 — 启动失败', msg); } catch (e) { /* 无 GUI 时忽略 */ }
     app.exit(1);
     return;
   }

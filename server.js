@@ -1,5 +1,5 @@
 /**
- * 本地 HTTP 服务器 —— 新一代日戳管理系统
+ * 本地 HTTP 服务器 —— 新一代集邮管理系统
  * ==========================================
  * 本文件是从 main.js 平移出来的「与应用外壳无关」的服务端：
  *   - 静态文件（index.html / js / css / geo / 前端库）
@@ -35,6 +35,8 @@ const { execFileSync } = require('child_process');
 
 const CrawlerEngine = require('./crawler-engine');
 const ImgExport = require('./img-export');
+const Postal = require('./postal');
+const PostalBase = require('./postal/base-updater');
 
 // ---- 常量 ----
 const DEFAULT_HOST = '127.0.0.1';
@@ -47,6 +49,8 @@ const DEFAULT_PORT = 19876;
  */
 const POST_ROUTES = [
   '/api/crawl/start', '/api/crawl/cancel',
+  '/api/postal/crawl/start',
+  '/api/postal/apply-base',
   '/api/images/save', '/api/images/delete',
 ];
 
@@ -290,6 +294,234 @@ function listCsv(dir) {
 }
 
 /**
+ * 在 output 中找某个港澳台站点的最新结果。
+ * 新格式是 prefix-YYYYMMDD.csv；兼容旧版固定文件名 prefix.csv。
+ * 返回 { name, path, size, mtime } 或 null。
+ */
+function findLatestPostalOutput(dir, prefix) {
+  let entries;
+  try {
+    entries = fs.readdirSync(dir);
+  } catch (e) {
+    return null;
+  }
+
+  const p = String(prefix || '').toLowerCase();
+  let best = null;
+  let bestDate = '';
+  let bestMtime = -1;
+
+  for (const f of entries) {
+    const lower = f.toLowerCase();
+    let datePart = '';
+    if (lower === `${p}.csv`) {
+      datePart = '';
+    } else {
+      const m = new RegExp(`^${p}-(\\d{8})\\.csv$`).exec(lower);
+      if (!m) continue;
+      datePart = m[1];
+    }
+
+    let st;
+    try {
+      st = fs.statSync(path.join(dir, f));
+      if (!st.isFile()) continue;
+    } catch (e) {
+      continue;
+    }
+
+    if (datePart > bestDate || (datePart === bestDate && st.mtimeMs > bestMtime)) {
+      bestDate = datePart;
+      bestMtime = st.mtimeMs;
+      best = {
+        name: f,
+        path: path.join(dir, f),
+        size: st.size,
+        mtime: st.mtimeMs,
+      };
+    }
+  }
+
+  return best;
+}
+
+/**
+ * 港澳台查询数据源：优先 base/{prefix}+base.csv，没有再用 output 最新结果。
+ * 返回给前端的 url 只暴露受控的 /base/ 与 /output/ 路径。
+ */
+function getPostalSources(outputDir, baseDir) {
+  const files = Postal.SITES.map((site) => {
+    const basePath = path.join(baseDir, site.baseFile);
+    let baseStat = null;
+    try {
+      const st = fs.statSync(basePath);
+      if (st.isFile()) baseStat = st;
+    } catch (e) { /* base 尚未更新 */ }
+
+    const latest = findLatestPostalOutput(outputDir, site.prefix);
+    let chosen = null;
+    if (baseStat && baseStat.size > 0) {
+      chosen = {
+        source: 'base',
+        name: site.baseFile,
+        url: '/base/' + encodeURIComponent(site.baseFile),
+        size: baseStat.size,
+        mtime: baseStat.mtimeMs,
+      };
+    } else if (latest) {
+      chosen = {
+        source: 'output',
+        name: latest.name,
+        url: '/output/' + encodeURIComponent(latest.name),
+        size: latest.size,
+        mtime: latest.mtime,
+      };
+    }
+
+    return {
+      key: site.key,
+      label: site.label,
+      source: chosen ? chosen.source : 'none',
+      name: chosen ? chosen.name : null,
+      url: chosen ? chosen.url : null,
+      size: chosen ? chosen.size : 0,
+      mtime: chosen ? chosen.mtime : 0,
+      baseFile: site.baseFile,
+      baseExists: !!baseStat,
+      outputName: latest ? latest.name : null,
+      outputMtime: latest ? latest.mtime : 0,
+    };
+  });
+
+  const outputs = Postal.SITES.map((site) => {
+    const latest = findLatestPostalOutput(outputDir, site.prefix);
+    if (!latest) return null;
+    return {
+      key: site.key,
+      label: site.label,
+      name: latest.name,
+      url: '/output/' + encodeURIComponent(latest.name),
+      size: latest.size,
+      mtime: latest.mtime,
+    };
+  }).filter(Boolean);
+
+  return { files, outputs };
+}
+
+/** 用户确认后，把本次作业成功产出的文件复制到 base/ */
+function applyPostalBase(jobId, baseDir) {
+  const job = postalJobs.get(String(jobId || ''));
+  if (!job) {
+    const err = new Error('作业不存在或已过期，无法更新 base');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (job.state === 'running') {
+    const err = new Error('作业仍在运行，不能更新 base');
+    err.statusCode = 409;
+    throw err;
+  }
+  if (postalRunningJob && postalRunningJob !== job) {
+    const err = new Error('已有港澳台采集作业正在运行，请稍后再更新 base');
+    err.statusCode = 409;
+    throw err;
+  }
+  if (!Array.isArray(job.summary)) {
+    const err = new Error('该作业没有可用的运行摘要，无法更新 base');
+    err.statusCode = 400;
+    throw err;
+  }
+  return PostalBase.applyToBase(job.summary, { baseDir });
+}
+
+/**
+ * 港澳台采集作业 — 独立于大陆 crawler-engine 的作业表。
+ * 只允许一个作业并发；日志逐行写入 job.logs，前端用 cursor 增量拉取。
+ */
+const postalJobs = new Map();
+let postalRunningJob = null;
+
+function startPostalJob(body, outputDir) {
+  if (postalRunningJob) {
+    const err = new Error('已有港澳台采集作业正在运行，请等待其结束');
+    err.statusCode = 409;
+    throw err;
+  }
+
+  const only = Array.isArray(body.only)
+    ? body.only
+    : (body.only ? String(body.only).split(',') : undefined);
+  const delay = body.delay == null ? 0.4 : Number(body.delay);
+  const timeout = body.timeout == null ? 30 : Number(body.timeout);
+  const attempts = body.attempts == null ? 3 : Number(body.attempts);
+
+  const job = {
+    id: `postal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    state: 'running',
+    logs: [],
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    summary: null,
+    outputDir: null,
+    logFile: null,
+    error: null,
+  };
+  postalJobs.set(job.id, job);
+  postalRunningJob = job;
+
+  // 只保留最近 10 个作业，避免长时间运行时日志无限增长
+  while (postalJobs.size > 10) {
+    const oldest = postalJobs.keys().next().value;
+    if (oldest === job.id) break;
+    postalJobs.delete(oldest);
+  }
+
+  Postal.runAll({
+    outputDir,
+    only,
+    delayMs: Number.isFinite(delay) ? Math.max(0, delay) * 1000 : 400,
+    timeoutMs: Number.isFinite(timeout) ? Math.max(1, timeout) * 1000 : 30000,
+    maxAttempts: Number.isFinite(attempts) ? Math.max(1, Math.floor(attempts)) : 3,
+    dryRun: body.dryRun === true || body.dryRun === 'true' || body.dryRun === 1,
+    onLine: (line) => { job.logs.push(line); },
+  }).then((result) => {
+    job.summary = result.summary;
+    job.outputDir = result.outputDir;
+    job.logFile = result.logFile;
+    job.state = result.ok ? 'done' : 'failed';
+    if (!result.ok) job.error = '部分站点采集失败，详见运行摘要';
+  }).catch((e) => {
+    job.state = 'failed';
+    job.error = e && e.message ? e.message : String(e);
+    job.logs.push(`[ERROR] ${job.error}`);
+  }).finally(() => {
+    job.finishedAt = new Date().toISOString();
+    if (postalRunningJob === job) postalRunningJob = null;
+  });
+
+  return job;
+}
+
+function getPostalStatus(jobId, cursor) {
+  const job = postalJobs.get(jobId);
+  if (!job) return null;
+  const start = Math.max(0, Math.min(Number(cursor) || 0, job.logs.length));
+  return {
+    jobId: job.id,
+    state: job.state,
+    logs: job.logs.slice(start),
+    cursor: job.logs.length,
+    startedAt: job.startedAt,
+    finishedAt: job.finishedAt,
+    summary: job.summary,
+    outputDir: job.outputDir,
+    logFile: job.logFile,
+    error: job.error,
+  };
+}
+
+/**
  * 处理一次请求。抽成独立函数是为了让 createServer 保持简短，
  * 也方便将来单独测路由。
  */
@@ -308,6 +540,42 @@ function createRequestHandler(paths) {
     if (req.method !== 'GET' && !(allowPost && req.method === 'POST')) {
       res.writeHead(405);
       return res.end('Method Not Allowed');
+    }
+
+    // ---------- 港澳台采集接口 ----------
+    if (urlPath.startsWith('/api/postal/')) {
+      try {
+        if (urlPath === '/api/postal/crawl/start') {
+          const body = await readJsonBody(req);
+          const job = startPostalJob(body || {}, resolveOutputDir());
+          return sendJson(res, 200, { jobId: job.id });
+        }
+
+        if (urlPath === '/api/postal/crawl/status') {
+          const jobId = query.get('job');
+          const cursor = Number(query.get('cursor')) || 0;
+          const status = getPostalStatus(jobId, cursor);
+          if (!status) return sendJson(res, 404, { error: '作业不存在或已过期' });
+          return sendJson(res, 200, status);
+        }
+
+        if (urlPath === '/api/postal/apply-base') {
+          const body = await readJsonBody(req);
+          const result = applyPostalBase(body && body.jobId, resolveBaseDir());
+          return sendJson(res, 200, result);
+        }
+
+        if (urlPath === '/api/postal/files') {
+          return sendJson(res, 200, getPostalSources(resolveOutputDir(), resolveBaseDir()));
+        }
+
+        res.writeHead(404);
+        return res.end('Not Found');
+      } catch (e) {
+        const status = e.statusCode || 500;
+        if (status >= 500) console.error('[Postmark] 港澳台采集接口异常:', e);
+        return sendJson(res, status, { error: e.message || String(e) });
+      }
     }
 
     // ---------- 爬虫接口 ----------
@@ -621,7 +889,7 @@ if (require.main === module) {
 
   start({ root, host, port }).then(({ server, port: actual }) => {
     console.log('============================================================');
-    console.log(` 新一代日戳管理系统 — 本地服务器`);
+    console.log(` 新一代集邮管理系统 — 本地服务器`);
     console.log(` 根目录: ${root}`);
     console.log(` 地址  : http://${host}:${actual}`);
     console.log(' 按 Ctrl+C 停止');

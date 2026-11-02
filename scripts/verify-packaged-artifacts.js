@@ -136,12 +136,17 @@ async function main() {
                     'img-export.js',
                     'preload.js', 'index.html', 'css/style.css',
                     'js/crawler.js', 'js/postodb.js', 'js/data.js', 'js/idb.js',
+                    'js/postal-store.js', 'js/postal-page.js',
                     'js/image.js', 'js/image-editor.js', 'js/img-naming.js'];
   for (const f of appFiles) {
     check(`已打包 ${f}`, fs.existsSync(path.join(extractDir, f)));
   }
+  check('已打包 postal/ 港澳台采集模块',
+    fs.existsSync(path.join(extractDir, 'postal', 'index.js')) &&
+    fs.existsSync(path.join(extractDir, 'postal', 'base-updater.js')) &&
+    fs.existsSync(path.join(extractDir, 'postal', 'collectors', 'hk.js')));
   const baseCsv = fs.readdirSync(path.join(extractDir, 'base')).filter((f) => f.endsWith('.csv'));
-  eq('base CSV 数量', baseCsv.length, 62);
+  check('base CSV 数量不少于 62（港澳台 +base 为可选文件）', baseCsv.length >= 62);
 
   // ---- [4] 打包的是当前源码，而不是上一次构建的残留 ----
   // 只查「文件在不在」会让忘记 rebuild 的旧包一路绿灯，这里比对新功能的标记。

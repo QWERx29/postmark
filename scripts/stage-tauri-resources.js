@@ -9,7 +9,7 @@
  *   resources/app/server.js      本地 HTTP 服务器入口
  *   resources/app/crawler-*.js   爬虫引擎与匹配逻辑
  *   resources/app/index.html     前端
- *   resources/app/js|css|geo     前端资源
+ *   resources/app/js|css|geo|postal 前端资源与港澳台采集模块
  *   resources/app/base/*.csv     网点参考数据
  *   resources/app/node_modules/  iconv-lite / safer-buffer（crawler-engine 的运行时依赖）
  *   resources/app/txt_compare.exe  对比工具
@@ -42,7 +42,7 @@ const APP_FILES = [
   'index.html',
   'txt_compare.exe',
 ];
-const APP_DIRS = ['js', 'css', 'geo', 'base'];
+const APP_DIRS = ['js', 'css', 'geo', 'base', 'postal'];
 
 // ---- Node 侧运行时依赖：只有 crawler-engine 真实 require 的那两个 ----
 // （echarts / xlsx / jsbarcode 是前端 <script> 直接引用的，需要单独处理）
