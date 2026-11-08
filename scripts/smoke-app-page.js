@@ -49,26 +49,24 @@ function gbkB64(text) {
   return iconv.encode(text, 'gbk').toString('base64');
 }
 
-/** 临时站点里用目录联接接回项目的目录（删除时必须先摘链接，见 removeSite） */
-const LINKED_DIRS = ['js', 'css', 'geo', 'base', 'node_modules'];
-const linked = [];
-
 /**
- * 把「项目根目录 + 自检脚本」搭成一个临时站点。
+ * 把「真实 index.html + 自检脚本」写成项目根目录下的一个临时页面。
  *
- * 为什么不在 /scripts/ 下直接放一份 index.html：
- * index.html 里的 <script src="js/..."> 是**相对路径**，
- * 从 /scripts/ 打开会解析成 /scripts/js/... 全部 404，
- * 自检就会报一堆"模块未加载"的假故障。真实应用是从根目录提供 index.html 的，
- * 这里必须复现同样的情形：根目录放自检页，其余目录用软链接接回项目。
+ * 为什么不再用临时目录 + junction：
+ * 旧实现把 js/css/geo/base/node_modules 以 junction 链进 %TEMP%，
+ * 任何递归删除（清理软件、Remove-Item -Recurse、fs.rmSync）都会穿透
+ * junction 删掉项目里的真实目录。2026-10-08、2026-10-18 已因此误删过两次。
+ *
+ * 现在页面直接落在项目根目录，相对路径 js/...、css/... 与真实应用完全一致，
+ * 既不需要链接，也不需要复制；清理时只删这一个 HTML 文件。
  */
-function buildSite() {
-  const site = fs.mkdtempSync(path.join(os.tmpdir(), 'postmark-site-'));
+function buildSmokePage() {
+  const file = path.join(ROOT, `.smoke-app-${process.pid}-${Date.now().toString(36)}.html`);
   // 入口页 = 真实 index.html + 末尾追加自检脚本
   const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
   const probe = `
 <script>
-// 网点详情自检用的迷你参考库（GBK→base64，Node 侧生成，见 buildSite）
+// 网点详情自检用的迷你参考库（GBK→base64，Node 侧生成，见 buildSmokePage）
 const PO_POST_B64 = '${gbkB64(PO_TEST_CSV_POST)}';
 const PO_SPB_B64 = '${gbkB64(PO_TEST_CSV_SPB)}';
 const PO_OLD_B64 = '${gbkB64(PO_TEST_CSV_OLD)}';
@@ -953,47 +951,18 @@ if (document.readyState === 'loading') document.addEventListener('DOMContentLoad
 else __runSmoke();
 </script>
 `;
-  fs.writeFileSync(path.join(site, 'index.html'), `${html}\n${probe}`, 'utf8');
-
-  // 目录软链接回项目：Windows 上建目录联接不需要管理员权限
-  for (const d of LINKED_DIRS) {
-    const target = path.join(ROOT, d);
-    if (!fs.existsSync(target)) continue;
-    try {
-      fs.symlinkSync(target, path.join(site, d), 'junction');
-      linked.push(d);
-    } catch (e) {
-      // 建不了联接就退回整体拷贝（慢一点，但结果一样）
-      fs.cpSync(target, path.join(site, d), { recursive: true });
-    }
-  }
-  return site;
+  fs.writeFileSync(file, `${html}\n${probe}`, 'utf8');
+  return file;
 }
 
-/**
- * 安全删除临时站点。
- *
- * ⚠️ 必须先把目录联接摘掉再删。
- * site 里的 js / css / geo / base / node_modules 是指向真实项目的 **junction**，
- * 而 `fs.rmSync(site, { recursive: true })` 在 Windows 上会**顺着联接递归删除**，
- * 也就是把项目里对应目录的内容一起删光（2026-10-08 就这么误删过一次，
- * 当时进程被中断在半路，js/ css/ geo/ base/ 全空，node_modules 只删了一半）。
- * 所以这里对每个联接只做「解除链接」，绝不递归。
- */
-function removeSite(site) {
-  for (const d of LINKED_DIRS) {
-    const p = path.join(site, d);
-    let st;
-    try { st = fs.lstatSync(p); } catch (e) { continue; }   // 不在就跳过
-    if (st.isSymbolicLink()) {
-      // 目录联接：unlink 或 rmdir 都只删链接本身，不会碰目标
-      try { fs.unlinkSync(p); } catch (e) { try { fs.rmdirSync(p); } catch (e2) { /* ignore */ } }
-    } else if (st.isDirectory()) {
-      // 退化成真实拷贝的情况，删这一层是安全的（内容在临时目录里）
-      try { fs.rmSync(p, { recursive: true, force: true }); } catch (e) { /* ignore */ }
-    }
-  }
-  try { fs.rmSync(site, { recursive: true, force: true }); } catch (e) { /* ignore */ }
+/** 只删自检页本身；路径必须正好在项目根目录下，且不是链接。 */
+function removeSmokePage(file) {
+  try {
+    const abs = path.resolve(file);
+    if (path.dirname(abs) !== path.resolve(ROOT)) return;
+    if (fs.lstatSync(abs).isSymbolicLink()) return;
+    fs.rmSync(abs, { force: true });
+  } catch (e) { /* 已不存在则忽略 */ }
 }
 
 async function main() {
@@ -1006,14 +975,16 @@ async function main() {
     return 0;
   }
 
-  const site = buildSite();
+  const smokePage = buildSmokePage();
   // 图片写到临时目录：入口页自检不该往项目的 output/ 里塞东西
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'postmark-page-'));
   process.env.POSTMARK_OUTPUT_DIR = path.join(tmpRoot, 'output');
   process.env.POSTMARK_IMAGES_DIR = path.join(tmpRoot, 'images');
 
-  const started = await Server.start({ root: site, port: 0 });
-  const { url, marker } = BrowserTest.withResultMarker(`http://127.0.0.1:${started.port}/index.html`);
+  // 直接服务真实项目根：临时页面在根目录，相对路径与真实入口页一致
+  const started = await Server.start({ root: ROOT, port: 0 });
+  const { url, marker } = BrowserTest.withResultMarker(
+    `http://127.0.0.1:${started.port}/${encodeURIComponent(path.basename(smokePage))}`);
   console.log(`\n浏览器: ${exe}`);
   console.log(`入口页: ${url}\n`);
 
@@ -1024,11 +995,11 @@ async function main() {
   } finally {
     await Server.stop(started.server);
     if (!keep) {
-      removeSite(site);
+      removeSmokePage(smokePage);
       try { fs.rmSync(workDir, { recursive: true, force: true }); } catch (e) { /* ignore */ }
       try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch (e) { /* ignore */ }
     } else {
-      console.log(`临时站点: ${site}`);
+      console.log(`自检页: ${smokePage}`);
       console.log(`浏览器输出: ${workDir}`);
     }
   }

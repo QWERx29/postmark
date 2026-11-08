@@ -8,13 +8,14 @@
  *   resources/node/node.exe      随包分发的 Node 运行时（用户无需自己装 Node）
  *   resources/app/server.js      本地 HTTP 服务器入口
  *   resources/app/crawler-*.js   爬虫引擎与匹配逻辑
+ *   resources/app/uprins.js      UPRINS 扫码链接解析
  *   resources/app/index.html     前端
  *   resources/app/js|css|geo|postal 前端资源与港澳台采集模块
  *   resources/app/base/*.csv     网点参考数据
- *   resources/app/node_modules/  iconv-lite / safer-buffer（crawler-engine 的运行时依赖）
+ *   resources/app/node_modules/  iconv-lite / safer-buffer（crawler-engine / uprins 的运行时依赖）
  *   resources/app/txt_compare.exe  对比工具
  *
- * 刻意不拷的东西：webui.py / crawler.py（Python 单文件工具，外壳用不到）、
+ * 刻意不拷的东西：webui.py / crawler.py / uprins.py（Python 单文件工具，外壳用不到）、
  * output/（运行时产出）、release/、scripts/、测试与调试产物。
  *
  *   node scripts/stage-tauri-resources.js [--clean]
@@ -39,6 +40,7 @@ const APP_FILES = [
   'crawler-match.js',
   'crawler-intelligent.js',
   'img-export.js',
+  'uprins.js',
   'index.html',
   'txt_compare.exe',
 ];

@@ -4,9 +4,12 @@
   "description": "新一代集邮管理系统 — 桌面版",
   "main": "main.js",
   "scripts": {
+    "doctor": "node doctor.js",
+    "clean:temp": "node scripts/safe-clean.js",
     "start": "node scripts/start.js",
     "start:web": "node launch.js",
     "start:server": "node server.js",
+    "prestart:server": "node doctor.js --preflight",
     "migrate:browser": "node scripts/migrate-to-chrome.js",
     "migrate:webview2": "node scripts/migrate-to-chrome.js --preset=webview2",
     "stage:tauri": "node scripts/stage-tauri-resources.js",

@@ -35,6 +35,11 @@ const net = require('net');
 const os = require('os');
 const path = require('path');
 
+const Doctor = require('./doctor');
+
+// 启动前先做完整性检查：缺文件/依赖时给出修复命令，而不是 MODULE_NOT_FOUND。
+if (!Doctor.preflight()) process.exit(1);
+
 const Server = require('./server');
 
 const ROOT = __dirname;

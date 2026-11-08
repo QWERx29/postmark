@@ -30,6 +30,8 @@ output/
 _regress_*.json
 scripts/_tmp_realdiff/
 scripts/_realdiff.json
+# 入口页自检在项目根目录生成的临时页面（正常会自动删除，异常退出时留档）
+.smoke-*.html
 
 # Python
 __pycache__/

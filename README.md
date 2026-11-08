@@ -4,8 +4,9 @@
 
 应用基于 **Electron**，在本地启动一个轻量 HTTP 服务器（默认 `127.0.0.1:19876`），
 前端页面通过该服务器访问主进程中的爬虫引擎与数据目录，从而绕开 `file://` 协议的跨域限制。
-**应用只监听回环地址；除主动抓取邮政官网数据，以及「邮件管理 · 查询」按需加载 17TRACK
-查询组件（`www.17track.net`）外，不产生任何外部连接。**
+**应用只监听回环地址；除主动抓取邮政官网数据、使用「工具箱 · 机戳查询」时访问
+`uprins.com`，以及「邮件管理 · 查询」按需加载 17TRACK 查询组件（`www.17track.net`）外，
+不产生任何外部连接。**
 
 ---
 
@@ -19,7 +20,8 @@
 | 邮资机戳 | 独立于日戳记录的一张表（侧边栏「数据管理 · 邮资机戳」），列示型号 / 编号 / 上环 / 下环 / 表头 / 打印日期 / 打印网点 / 备注；打印网点按 省 → 市 → 县 选定后再填名称，候选建议与「录入日戳」同源（本机日戳记录 + `base` 参考库）；列表可按要素升降序排序。首次启动自动把日戳记录里已填的邮资机信息移植过来，之后两边互不影响，可手动「从日戳记录移植」补拉 |
 | 地图可视化 | ECharts 中国地图着色，支持省 → 市下钻，GeoJSON 全部本地加载 |
 | 统计面板 | 收集总量与省 / 地 / 县覆盖数、省份排名表、采集日历热力图。排名表的「总计」不是写死的估算值：大陆省份取自 `base` 参考库里该省的邮政官网（POST）网点数，港澳台取自 `PostalStore`（香港 / 澳门 / 台湾邮局 + 代办所）；参考库导入、对比刷新或港澳台抓取完成后自动重算。右下角「数据更新」显示参考库最后一次刷新的日期 |
-| 工具箱 | 机构号生成器、信函条码校验与生成、条码展示、随机网点、网点检索 |
+| 工具箱 | 首页按工具列出入口，**每页一个工具**：机构号生成器、信函条码校验与生成、条码展示、随机网点、机戳查询 |
+| 机戳查询 | 通过二维码链接解析机戳信息。输入 `s.uprins.com` 扫描链接，服务端取得跳转页面后自动拆分，解析结果统一显示为：邮资机编号 / 邮资机表头 / 当前总过戳数 / 验证码 / 宣传戳编号（原始扫描页中的旧名称保持不变）。原始内容支持斜杠分隔（`TFJ004/闽 AA39/...`）和「标签：值」两种格式，**宣传戳编号可为空**；当前总过戳数会去除前导零。若中间链接带有打印参数（`03_XJS...`），还会解析打印日期、打印金额（分）和当前图案过戳数（件）。若链接返回图片，会以 750px 宽居中显示在原始扫描内容下方（data URL，不落盘、不缓存）。未识别为机戳格式时回退显示原始内容；只有图片时直接显示图片 |
 | 网点检索 | 在 `base` 参考库中按行政区划 / 来源 / 关键字检索网点（含 `base_old` 历史归档，带「历史」徽标）。**单击「网点名称」弹出该网点的详细信息**：地址、开办业务、邮管局详情链接、历史归档原因与时间，以及与它匹配的收集记录（机构号 / 盖销日期 / 戳号） |
 | 港澳台网点 | 侧边栏「数据管理 · 港澳台网点」下的「网点查询」与「数据抓取」（父项默认折叠）。查询支持香港 / 澳门 / 台湾、邮局 / 代办所、关键字过滤，局名已收集标绿，详情弹窗复用网点检索；抓取在服务端运行 `postal/` 四站采集，日志回传页面，完成后自动刷新查询与首页总数，并询问是否把结果写入 `base/*+base.csv`。台湾总数 = 邮局 + 代办所 |
 | 邮戳图片 | 侧边栏「数据管理 · 邮戳图片」：把日戳记录里的图片（`photos`）摊平成**正方形照片画廊**，可缩略浏览、按省份筛选、按关键字搜索、按盖销日期 / 邮局名 / 录入时间排序；单击任一展示区打开大图与记录详情，← / → 逐张翻阅，并可直接「编辑记录」 |
@@ -199,6 +201,27 @@ npm install     # 安装依赖
 npm start       # 开发模式启动（scripts/start.js 包装，会自动降级）
 ```
 
+启动前会自动跑一次完整性检查（`node doctor.js --preflight`），缺文件或依赖时直接给出修复命令，
+不再等到 `MODULE_NOT_FOUND`。也可以手动执行：
+
+```bash
+npm run doctor
+```
+
+它会检查 `index.html` / `js/` / `css/` / `geo/` / `base/` / 启动链文件、`iconv-lite` 与
+`safer-buffer`、前端库的 `dist` 文件，以及 `git status` 里被删除的已跟踪文件。
+
+清理临时文件（默认只预览，确认后加 `--apply`）：
+
+```bash
+npm run clean:temp
+npm run clean:temp -- --apply
+```
+
+只清理 `.smoke-*.html`、`output/tmp/`、`output/**/*.part`、`data/browser-chrome` 下的浏览器缓存、
+`_recovery/tmp-*`；`scripts/_tmp_*` 需额外加 `--include-tmp-scripts`。`js/css/geo/base/node_modules/.git`
+等一律保护，遇到符号链接/目录联接会直接拒绝删除。运行前请先关闭应用。
+
 `npm start` 由 `scripts/start.js` 包装，做两件事：
 
 **1）数据只有一份。** 固定使用项目内 `.userdata/` profile —— 受限身份写不了 `%APPDATA%`，
@@ -263,7 +286,7 @@ postmark/
 │   ├── return-list.js    #   国际退信列表、录入表单与寄达地详情弹窗
 │   ├── stats.js          #   统计面板
 │   ├── store.js          #   收藏记录的 localStorage CRUD
-│   ├── tools.js          #   工具箱
+│   ├── tools.js          #   工具箱（首页入口 + 每页一个工具）
 │   └── track.js          #   邮件管理 · 查询（17TRACK 组件懒加载与调用）
 ├── crawler-engine.js     # 爬虫引擎（主进程）：爬取 / 对比 / 横向对比
 ├── crawler-match.js      # 横向对比匹配引擎（纯函数）
@@ -279,6 +302,7 @@ postmark/
 │   ├── logger.js         #   控制台 + output/postal-crawl-*.log
 │   └── collectors/       #   hk.js / mo.js / tw.js / agencytw.js
 ├── img-export.js         # 图片落盘：目录解析 / 命名兜底 / 原子写入 / 删除
+├── uprins.js             # 机戳查询（UPRINS 扫码链接解析 + 机戳字段 / 打印参数拆分 + 图片 data URL 提取，服务端）
 ├── txt_compare.exe       # 外部对比工具（旧版 vs 新版 CSV 差异）
 ├── base/                 # 基准数据：31 省 × (POST + SPB) = 62 个 CSV；另有港澳台 +base 文件
 ├── output/               # 抓取产出与报告（不入库，见 .gitignore）
@@ -286,6 +310,7 @@ postmark/
 ├── geo/                  # 本地 GeoJSON，按行政区划代码命名
 ├── scripts/              # 测试、回归与代码生成脚本（见下）
 ├── crawler.py            # Python 原版爬虫（历史脚本，详见「Python 工具」）
+├── uprins.py             # UPRINS 扫码链接解析 Python 原版（历史脚本，含机戳字段 / 打印参数拆分）
 └── webui.py              # Flask + SQLite 的检索界面（历史脚本）
 ```
 
@@ -338,7 +363,7 @@ postmark/
 
 ## 内置 HTTP 接口
 
-由 `main.js` 提供，除标注外均为 `GET`：
+由 `server.js` 提供，除标注外均为 `GET`：
 
 | 接口 | 说明 |
 | --- | --- |
@@ -353,6 +378,7 @@ postmark/
 | `/api/images/list?subdir=&limit=` | 列出已保存的图片 |
 | `POST /api/images/save` | 保存图片，body 为 `{ dataUrl, fileName, subdir, conflict }` |
 | `POST /api/images/delete` | 删除图片，body 为 `{ fileName, subdir }` |
+| `POST /api/tools/uprins` | 机戳查询：解析 UPRINS 扫码链接，body 为 `{ url }`，返回 `{ ok, text, fields, image }`；`fields` 为识别出的机戳字段（最多 8 项：邮资机编号 / 邮资机表头 / 当前总过戳数 / 验证码 / 宣传戳编号 + 可选的打印日期 / 打印金额 / 当前图案过戳数，`宣传戳编号` 可能为空字符串），未识别时为 `null`；`image` 为 `data:image/...;base64,...` 或 `null`，每次请求重新生成，不缓存 |
 | `/images/*` | 读取已保存的图片（缩略图与预览） |
 | `/base/*`、`/output/*` | 读取对应目录中的文件 |
 | 其余路径 | 项目目录内的静态文件 |
@@ -493,11 +519,17 @@ node scripts/smoke-packaged.js [exeDir]                 # 需先 build 并让 ex
 ## Python 工具（历史脚本）
 
 根目录的 `crawler.py` 与 `webui.py` 是这套系统的 Python 原版，Node 版引擎即由 `crawler.py` 移植而来。
+`uprins.py` 是 UPRINS 扫码链接解析的 Python 原版（同样支持斜杠分隔与「标签：值」两种机戳格式，以及中间链接打印参数），应用内的「工具箱 · 机戳查询」
+由 `uprins.js` 在服务端实现，解析结果统一显示为邮资机编号 / 邮资机表头 / 当前总过戳数 / 验证码 / 宣传戳编号
+（原始扫描页中的旧名称保持不变；宣传戳编号可为空，当前总过戳数去除前导零），
+并在中间链接带有打印参数时追加打印日期 / 打印金额 / 当前图案过戳数，
+不再需要本机安装 Python / requests / bs4。图片展示仅在应用内实现，Python 原版不输出图片。
 它们仍可在 Python 环境下独立运行：
 
 ```bash
 python crawler.py --source post --province 上海 北京 --delay 2.0   # 原始爬虫
 python webui.py --port 8092                                        # Flask + SQLite 检索界面
+python uprins.py "https://s.uprins.com/..."                        # 机戳查询（Python 原版）
 ```
 
 与 Node 版相比，`crawler-engine.js` 有几处**有意为之**的差异：

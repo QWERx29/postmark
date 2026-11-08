@@ -37,6 +37,7 @@ const CrawlerEngine = require('./crawler-engine');
 const ImgExport = require('./img-export');
 const Postal = require('./postal');
 const PostalBase = require('./postal/base-updater');
+const Uprins = require('./uprins');
 
 // ---- 常量 ----
 const DEFAULT_HOST = '127.0.0.1';
@@ -52,6 +53,7 @@ const POST_ROUTES = [
   '/api/postal/crawl/start',
   '/api/postal/apply-base',
   '/api/images/save', '/api/images/delete',
+  '/api/tools/uprins',
 ];
 
 /** 请求体大小上限，防止异常客户端撑爆内存 */
@@ -540,6 +542,24 @@ function createRequestHandler(paths) {
     if (req.method !== 'GET' && !(allowPost && req.method === 'POST')) {
       res.writeHead(405);
       return res.end('Method Not Allowed');
+    }
+
+    // ---------- 工具箱 · 机戳查询 ----------
+    if (urlPath === '/api/tools/uprins') {
+      try {
+        const body = await readJsonBody(req);
+        const result = await Uprins.parse(body && body.url);
+        return sendJson(res, 200, {
+          ok: true,
+          text: result.text,
+          fields: result.fields,
+          image: result.image || null,
+        });
+      } catch (e) {
+        const status = e.statusCode || 500;
+        if (status >= 500) console.error('[Postmark] 机戳查询接口异常:', e);
+        return sendJson(res, status, { ok: false, error: e.message || String(e) });
+      }
     }
 
     // ---------- 港澳台采集接口 ----------

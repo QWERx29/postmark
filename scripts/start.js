@@ -30,6 +30,11 @@ const net = require('net');
 const os = require('os');
 const path = require('path');
 
+const Doctor = require('../doctor');
+
+// 启动前先做完整性检查：缺文件/依赖时给出修复命令，而不是 MODULE_NOT_FOUND。
+if (!Doctor.preflight()) process.exit(1);
+
 const ROOT = path.join(__dirname, '..');
 const PREFERRED_PORT = 19876;
 const BOOT_WAIT_MS = 15000;       // 等应用写出第一份回执（证明它认识本机制）

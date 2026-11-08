@@ -133,7 +133,7 @@ async function main() {
   console.log('\n[3] 应用自身文件');
   const appFiles = ['main.js', 'crawler-engine.js', 'crawler-match.js', 'crawler-cities.js',
                     'crawler-intelligent.js',
-                    'img-export.js',
+                    'img-export.js', 'uprins.js',
                     'preload.js', 'index.html', 'css/style.css',
                     'js/crawler.js', 'js/postodb.js', 'js/data.js', 'js/idb.js',
                     'js/postal-store.js', 'js/postal-page.js',
@@ -194,6 +194,22 @@ async function main() {
     '疑似陈旧构建：请重新 npm run build');
   check('打包的 css/style.css 含图片编辑器样式',
     packedCss.includes('.ie-crop-box') && packedCss.includes('.photo-thumb'),
+    '疑似陈旧构建：请重新 npm run build');
+
+  // 机戳查询：server require 的解析模块漏打会在点击「查询」时才炸
+  check('打包的 server.js 已接入机戳查询解析模块',
+    readApp('server.js').includes("require('./uprins") &&
+    readApp('server.js').includes('fields: result.fields') &&
+    readApp('server.js').includes('image: result.image') &&
+    readApp('uprins.js').includes('parseLabeledMachineStamp') &&
+    readApp('uprins.js').includes('parseSlashMachineStamp') &&
+    readApp('uprins.js').includes('parseMachineStampToken') &&
+    readApp('uprins.js').includes('detectImageMime'),
+    '疑似陈旧构建：请重新 npm run build');
+  check('打包的机戳查询页面含图片展示区',
+    packedHtml.includes('tool-uprins-image-wrap') &&
+    packedHtml.includes('tool-uprins-image') &&
+    packedCss.includes('.tool-uprins-image'),
     '疑似陈旧构建：请重新 npm run build');
 
   // 引擎侧：details 字段是弹窗的数据来源

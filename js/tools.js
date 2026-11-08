@@ -391,6 +391,208 @@
 			URL.revokeObjectURL(url);
 		});
 	}
+
+  // ============================================================
+  // 工具: 机戳查询（UPRINS 扫码链接解析）
+  // ============================================================
+  function initUprinsTool() {
+    const input = $('tool-uprins-input');
+    const btn = $('tool-uprins-run');
+    const clearBtn = $('tool-uprins-clear');
+    const statusEl = $('tool-uprins-status');
+    const fieldsEl = $('tool-uprins-fields');
+    const imageWrap = $('tool-uprins-image-wrap');
+    const imageEl = $('tool-uprins-image');
+    const resultWrap = $('tool-uprins-result-wrap');
+    const resultEl = $('tool-uprins-result');
+    const copyFieldsBtn = $('tool-uprins-copy-fields');
+
+    if (!input || !btn || !statusEl || !fieldsEl || !imageWrap || !imageEl || !resultWrap || !resultEl) return;
+
+    let currentFields = [];
+    let imageSeq = 0;
+
+    function setStatus(text, color) {
+      statusEl.textContent = text || '';
+      statusEl.style.color = color || '#888';
+    }
+
+    function resetResult() {
+      imageSeq += 1;
+      currentFields = [];
+      fieldsEl.innerHTML = '';
+      fieldsEl.style.display = 'none';
+      imageEl.removeAttribute('src');
+      imageEl.alt = '机戳图片';
+      imageWrap.style.display = 'none';
+      resultEl.textContent = '';
+      resultWrap.style.display = 'none';
+      if (copyFieldsBtn) copyFieldsBtn.style.display = 'none';
+    }
+
+    function renderImage(image) {
+      const seq = imageSeq + 1;
+      imageSeq = seq;
+      const src = typeof image === 'string' ? image : '';
+      if (!src) {
+        imageEl.removeAttribute('src');
+        imageWrap.style.display = 'none';
+        return false;
+      }
+
+      // 每次查询都用新返回的 data URL，不读取浏览器缓存
+      imageEl.removeAttribute('src');
+      imageEl.alt = '机戳图片';
+      imageEl.onerror = () => {
+        if (seq !== imageSeq) return;
+        imageWrap.style.display = 'none';
+        setStatus(
+          currentFields.length ? '图片加载失败，已显示解析内容' : '图片加载失败',
+          '#d48806'
+        );
+      };
+      imageEl.src = src;
+      imageWrap.style.display = 'block';
+      return true;
+    }
+
+    function renderFields(fields) {
+      currentFields = Array.isArray(fields)
+        ? fields.filter((field) => field && field.label)
+        : [];
+
+      fieldsEl.innerHTML = '';
+      if (!currentFields.length) {
+        fieldsEl.style.display = 'none';
+        if (copyFieldsBtn) copyFieldsBtn.style.display = 'none';
+        return;
+      }
+
+      currentFields.forEach((field) => {
+        const row = document.createElement('div');
+        row.className = 'tool-uprins-field';
+
+        const label = document.createElement('span');
+        label.className = 'tool-uprins-field-label';
+        label.textContent = field.label;
+
+        const value = document.createElement('code');
+        value.className = 'tool-uprins-field-value';
+        const text = field.value == null ? '' : String(field.value);
+        value.textContent = text || '（空）';
+        if (!text) value.classList.add('is-empty');
+
+        row.appendChild(label);
+        row.appendChild(value);
+        fieldsEl.appendChild(row);
+      });
+
+      fieldsEl.style.display = 'grid';
+      if (copyFieldsBtn) copyFieldsBtn.style.display = '';
+    }
+
+    function fieldsToText() {
+      return currentFields
+        .map((field) => `${field.label}：${field.value == null ? '' : field.value}`)
+        .join('\n');
+    }
+
+    async function copyFields() {
+      if (!copyFieldsBtn) return;
+      const text = fieldsToText();
+      if (!text) return;
+
+      try {
+        await navigator.clipboard.writeText(text);
+        const original = copyFieldsBtn.textContent;
+        copyFieldsBtn.textContent = '已复制';
+        setTimeout(() => { copyFieldsBtn.textContent = original; }, 1500);
+      } catch (e) {
+        // 剪贴板 API 不可用时退回临时 textarea
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); } catch (err) { /* ignore */ }
+        ta.remove();
+      }
+    }
+
+    async function run() {
+      if (btn.disabled) return;
+      const url = input.value.trim();
+      if (!url) {
+        setStatus('请输入扫描得到的链接', '#ff4d4f');
+        resetResult();
+        input.focus();
+        return;
+      }
+
+      const originalLabel = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '查询中…';
+      setStatus('正在通过服务器获取页面或图片…', '#888');
+      resetResult();
+
+      try {
+        const res = await fetch('/api/tools/uprins', {
+          method: 'POST',
+          cache: 'no-store',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+        });
+        let data = {};
+        try { data = await res.json(); } catch (e) { /* 非 JSON 响应 */ }
+
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || `查询失败（HTTP ${res.status}）`);
+        }
+
+        renderFields(data.fields);
+        const hasImage = renderImage(data.image);
+        const hasText = Boolean(data.text);
+        resultEl.textContent = data.text || '';
+        resultWrap.style.display = hasText ? 'block' : 'none';
+
+        if (hasImage && currentFields.length) {
+          setStatus('查询完成，已获取机戳信息和图片', '#00991A');
+        } else if (hasImage) {
+          setStatus('查询完成，已获取机戳图片', '#00991A');
+        } else if (currentFields.length) {
+          setStatus('查询完成，已识别机戳信息', '#00991A');
+        } else if (hasText) {
+          setStatus('查询完成，未识别为机戳格式，已显示原始内容', '#d48806');
+        } else {
+          setStatus('查询完成，未获取到可展示内容', '#d48806');
+        }
+      } catch (e) {
+        resetResult();
+        setStatus(e.message || '查询失败', '#ff4d4f');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalLabel;
+      }
+    }
+
+    btn.addEventListener('click', run);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') run();
+    });
+    if (clearBtn) {
+      clearBtn.addEventListener('click', () => {
+        input.value = '';
+        resetResult();
+        setStatus('');
+        input.focus();
+      });
+    }
+    if (copyFieldsBtn) {
+      copyFieldsBtn.addEventListener('click', copyFields);
+    }
+  }
+
   // ============================================================
   // 已收集记录索引 — 用于在网点检索结果中标记「已收集」
   // 匹配口径: 属地(省 + 区县) + 名称 + 邮编 全部一致，不计「市」
@@ -1020,6 +1222,7 @@
     initInstCodeTool();
     initBarcodeTool();
     initBarcodeDisplayTool();
+    initUprinsTool();
     initPOSearchTool();
     initJsonTool();
     initRandomPOTool();

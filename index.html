@@ -672,14 +672,69 @@
   </div>
 </div>
 
-<!-- ===== 工具箱页面 ===== -->
+<!-- ===== 工具箱首页 ===== -->
 <div id="tools-page" style="display:none;">
   <div id="tools-header">
     <h2>[ 常用工具箱 ]</h2>
     <button id="btn-tools-back" class="btn-secondary">← 返回</button>
   </div>
   <div id="tools-container">
-    <!-- 工具1: 机构号生成器 -->
+    <div class="tools-grid">
+      <button type="button" class="tool-entry" data-tool="inst">
+        <span class="tool-icon">[#]</span>
+        <span class="tool-entry-text">
+          <strong>机构号生成器</strong>
+          <small>根据 6 位邮政编码生成 8 位机构号</small>
+        </span>
+        <span class="tool-entry-arrow">→</span>
+      </button>
+
+      <button type="button" class="tool-entry" data-tool="barcode">
+        <span class="tool-icon">[码]</span>
+        <span class="tool-entry-text">
+          <strong>信函条码校验与生成</strong>
+          <small>校验 13 位信函条码，或按序列号批量生成</small>
+        </span>
+        <span class="tool-entry-arrow">→</span>
+      </button>
+
+      <button type="button" class="tool-entry" data-tool="barcode-show">
+        <span class="tool-icon">[条]</span>
+        <span class="tool-entry-text">
+          <strong>条码展示</strong>
+          <small>把条码号渲染成 CODE128 / EAN-13 等条形码</small>
+        </span>
+        <span class="tool-entry-arrow">→</span>
+      </button>
+
+      <button type="button" class="tool-entry" data-tool="random">
+        <span class="tool-icon">[随]</span>
+        <span class="tool-entry-text">
+          <strong>随机网点</strong>
+          <small>按来源和行政区划从参考库随机抽取网点</small>
+        </span>
+        <span class="tool-entry-arrow">→</span>
+      </button>
+
+      <button type="button" class="tool-entry" data-tool="uprins">
+        <span class="tool-icon">[戳]</span>
+        <span class="tool-entry-text">
+          <strong>机戳查询</strong>
+          <small>通过二维码链接解析机戳信息</small>
+        </span>
+        <span class="tool-entry-arrow">→</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 工具箱 · 机构号生成器 ===== -->
+<div id="tool-inst-page" class="tool-page" style="display:none;">
+  <div class="tool-page-header">
+    <h2>[ 工具箱 · 机构号生成器 ]</h2>
+    <button type="button" class="btn-secondary" data-tool-back>← 返回工具箱</button>
+  </div>
+  <div class="tool-page-container">
     <div class="tool-card">
       <div class="tool-card-header">
         <span class="tool-icon">[#]</span>
@@ -702,8 +757,16 @@
         </div>
       </div>
     </div>
+  </div>
+</div>
 
-    <!-- 工具2: 信函条码工具 -->
+<!-- ===== 工具箱 · 信函条码校验与生成 ===== -->
+<div id="tool-barcode-page" class="tool-page" style="display:none;">
+  <div class="tool-page-header">
+    <h2>[ 工具箱 · 信函条码校验与生成 ]</h2>
+    <button type="button" class="btn-secondary" data-tool-back>← 返回工具箱</button>
+  </div>
+  <div class="tool-page-container">
     <div class="tool-card">
       <div class="tool-card-header">
         <span class="tool-icon">[码]</span>
@@ -744,52 +807,67 @@
         </div>
       </div>
     </div>
+  </div>
+</div>
 
-    <!-- 工具3: 条码展示 -->
-	    <div class="tool-card">
-	      <div class="tool-card-header">
-	        <span class="tool-icon">[码]</span>
-	        <h3>条码展示</h3>
-	      </div>
-	      <div class="tool-card-body">
-	        <p class="tool-desc">将合法条码号转化为条形码图像，支持 CODE128 / EAN-13 / UPC-A / ITF-14 等格式</p>
-	        <div class="tool-form-row">
-	          <input type="text" id="tool-bc-show-input" class="form-input" placeholder="输入条码号，如 XS123456785CN" style="flex:1;font-family:'Consolas','Courier New',monospace;font-size:15px;letter-spacing:2px;">
-	        </div>
-	        <div class="tool-form-row">
-	          <select id="tool-bc-show-format" class="form-select" style="width:160px;">
-	            <option value="CODE128">CODE128 (通用)</option>
-	            <option value="CODE128A">CODE128A</option>
-	            <option value="CODE128B">CODE128B</option>
-	            <option value="CODE128C">CODE128C</option>
-	            <option value="EAN13">EAN-13</option>
-	            <option value="EAN8">EAN-8</option>
-	            <option value="UPC">UPC-A</option>
-	            <option value="ITF14">ITF-14</option>
-	            <option value="CODE39">CODE39</option>
-	            <option value="MSI">MSI</option>
-	            <option value="pharmacode">Pharmacode</option>
-	          </select>
-	          <button id="tool-bc-show-gen" class="btn-primary" style="background:#00991A;color:#fff;border:none;padding:7px 20px;border-radius:4px;cursor:pointer;font-weight:600;">生成条码</button>
-	        </div>
-	        <div id="tool-bc-show-result" style="display:none;">
-	          <div id="tool-bc-show-msg" style="font-size:13px;color:#ff4d4f;margin-bottom:8px;display:none;"></div>
-	          <div style="text-align:center;padding:16px;background:#fafafa;border-radius:6px;border:1px solid #f0f0f0;">
-	            <svg id="tool-bc-show-svg"></svg>
-	          </div>
-	          <div style="text-align:center;margin-top:8px;">
-	            <code id="tool-bc-show-text" style="font-size:13px;font-family:'Consolas','Courier New',monospace;letter-spacing:2px;color:#555;"></code>
-	          </div>
-	          <div style="text-align:center;margin-top:8px;">
-	            <button class="btn-small tool-copy" data-target="tool-bc-show-text" style="margin-right:6px;">复制号码</button>
-	            <button id="tool-bc-show-download" class="btn-small">下载 SVG</button>
-	          </div>
-	        </div>
-	      </div>
-	    </div>
-    
+<!-- ===== 工具箱 · 条码展示 ===== -->
+<div id="tool-barcode-show-page" class="tool-page" style="display:none;">
+  <div class="tool-page-header">
+    <h2>[ 工具箱 · 条码展示 ]</h2>
+    <button type="button" class="btn-secondary" data-tool-back>← 返回工具箱</button>
+  </div>
+  <div class="tool-page-container">
+    <div class="tool-card">
+      <div class="tool-card-header">
+        <span class="tool-icon">[条]</span>
+        <h3>条码展示</h3>
+      </div>
+      <div class="tool-card-body">
+        <p class="tool-desc">将合法条码号转化为条形码图像，支持 CODE128 / EAN-13 / UPC-A / ITF-14 等格式</p>
+        <div class="tool-form-row">
+          <input type="text" id="tool-bc-show-input" class="form-input" placeholder="输入条码号，如 XS123456785CN" style="flex:1;font-family:'Consolas','Courier New',monospace;font-size:15px;letter-spacing:2px;">
+        </div>
+        <div class="tool-form-row">
+          <select id="tool-bc-show-format" class="form-select" style="width:160px;">
+            <option value="CODE128">CODE128 (通用)</option>
+            <option value="CODE128A">CODE128A</option>
+            <option value="CODE128B">CODE128B</option>
+            <option value="CODE128C">CODE128C</option>
+            <option value="EAN13">EAN-13</option>
+            <option value="EAN8">EAN-8</option>
+            <option value="UPC">UPC-A</option>
+            <option value="ITF14">ITF-14</option>
+            <option value="CODE39">CODE39</option>
+            <option value="MSI">MSI</option>
+            <option value="pharmacode">Pharmacode</option>
+          </select>
+          <button id="tool-bc-show-gen" class="btn-primary" style="background:#00991A;color:#fff;border:none;padding:7px 20px;border-radius:4px;cursor:pointer;font-weight:600;">生成条码</button>
+        </div>
+        <div id="tool-bc-show-result" style="display:none;">
+          <div id="tool-bc-show-msg" style="font-size:13px;color:#ff4d4f;margin-bottom:8px;display:none;"></div>
+          <div style="text-align:center;padding:16px;background:#fafafa;border-radius:6px;border:1px solid #f0f0f0;">
+            <svg id="tool-bc-show-svg"></svg>
+          </div>
+          <div style="text-align:center;margin-top:8px;">
+            <code id="tool-bc-show-text" style="font-size:13px;font-family:'Consolas','Courier New',monospace;letter-spacing:2px;color:#555;"></code>
+          </div>
+          <div style="text-align:center;margin-top:8px;">
+            <button class="btn-small tool-copy" data-target="tool-bc-show-text" style="margin-right:6px;">复制号码</button>
+            <button id="tool-bc-show-download" class="btn-small">下载 SVG</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
-    <!-- 工具4: 随机网点 -->
+<!-- ===== 工具箱 · 随机网点 ===== -->
+<div id="tool-random-page" class="tool-page" style="display:none;">
+  <div class="tool-page-header">
+    <h2>[ 工具箱 · 随机网点 ]</h2>
+    <button type="button" class="btn-secondary" data-tool-back>← 返回工具箱</button>
+  </div>
+  <div class="tool-page-container">
     <div class="tool-card">
       <div class="tool-card-header">
         <span class="tool-icon">[随]</span>
@@ -835,6 +913,46 @@
   </div>
 </div>
 
+<!-- ===== 工具箱 · 机戳查询 ===== -->
+<div id="tool-uprins-page" class="tool-page" style="display:none;">
+  <div class="tool-page-header">
+    <h2>[ 工具箱 · 机戳查询 ]</h2>
+    <button type="button" class="btn-secondary" data-tool-back>← 返回工具箱</button>
+  </div>
+  <div class="tool-page-container">
+    <div class="tool-card">
+      <div class="tool-card-header">
+        <span class="tool-icon">[戳]</span>
+        <h3>机戳查询</h3>
+      </div>
+      <div class="tool-card-body">
+        <p class="tool-desc">通过扫描的二维码链接解析机戳信息。</p>
+        <div class="tool-form-row">
+          <input type="text" id="tool-uprins-input" class="form-input" placeholder="https://s.uprins.com/..." style="flex:1;font-family:'Consolas','Courier New',monospace;font-size:14px;">
+          <button id="tool-uprins-run" class="btn-primary" style="background:#00991A;color:#fff;border:none;padding:7px 20px;border-radius:4px;cursor:pointer;font-weight:600;">查询</button>
+          <button id="tool-uprins-clear" class="btn-secondary">清空</button>
+        </div>
+        <div id="tool-uprins-status" class="tool-uprins-status"></div>
+        <div id="tool-uprins-fields" class="tool-uprins-fields" style="display:none;"></div>
+        <div id="tool-uprins-result-wrap" style="display:none;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+            <span style="font-size:12px;color:#888;">原始扫描内容</span>
+            <span>
+              <button id="tool-uprins-copy-fields" class="btn-small" style="display:none;margin-right:6px;">复制解析结果</button>
+              <button class="btn-small tool-copy" data-target="tool-uprins-result">复制原始内容</button>
+            </span>
+          </div>
+          <pre id="tool-uprins-result" class="tool-uprins-result"></pre>
+        </div>
+        <div id="tool-uprins-image-wrap" class="tool-uprins-image-wrap" style="display:none;">
+          <div class="tool-uprins-image-caption">机戳图片（每次查询重新获取，不缓存）</div>
+          <img id="tool-uprins-image" class="tool-uprins-image" alt="机戳图片" decoding="async">
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ===== 网点检索页面 ===== -->
 <div id="po-search-page" style="display:none;">
   <div id="po-search-header">
@@ -848,7 +966,7 @@
         <h3>网点检索</h3>
       </div>
       <div class="tool-card-body">
-        <p class="tool-desc">在邮政网点参考库中按行政区划、来源与关键字筛选检索网点。参考库由 base 目录在应用启动时自动导入，对比完成后也会按更新方案刷新；<code>base_old</code> 归档的历史网点（已撤销、更名前的旧名称）默认一并列出并标注「历史」。</p>
+        <p class="tool-desc">在邮政网点参考库中按行政区划、来源与关键字筛选检索网点，可选是否包括已归档的历史网点。</p>
 
         <div class="tool-section-title">筛选条件</div>
         <div class="tool-form-row">
@@ -927,10 +1045,7 @@
       </div>
       <div class="tool-card-body">
         <p class="tool-desc">
-          查询香港、澳门、台湾的邮局与台湾邮政代办所。数据优先来自
-          <code>base/posthk+base.csv</code> 等文件；尚未更新 base 时读取
-          <code>output/posthk-YYYYMMDD.csv</code> 等最新一批结果。
-          台湾总数按「邮局 + 代办所」合并。已录入日戳的网点会在局名处标绿。
+          查询香港、澳门、台湾的邮政营业场所。
         </p>
 
         <div class="tool-section-title">筛选条件</div>
@@ -989,10 +1104,7 @@
       </div>
       <div class="tool-card-body">
         <p class="tool-desc">
-          依次抓取香港邮政、澳门邮电局、台湾普通邮局与台湾邮政代办所，写入
-          <code>output/</code> 下四份带日期后缀的 UTF-8 BOM CSV。单个站点失败不会覆盖该站旧文件，
-          其余站点继续；抓取完成后自动重新载入查询数据并刷新首页总数，随后询问是否把本次结果
-          复制到 <code>base/*+base.csv</code>。
+          依次抓取香港邮政、澳门邮电局、台湾普通邮局与台湾邮政代办所。
         </p>
 
         <div class="tool-section-title">数据源</div>
@@ -1076,8 +1188,7 @@
       </div>
       <div class="tool-card-body">
         <p class="tool-desc">
-          抓取邮政官网营业信息和邮管局公示数据，保存为 GBK 编码 CSV 到 output 目录。
-          抓取只产出数据，<b>不会更新应用内参考库</b> —— 参考库留到「对比并更新 base」时按更新方案一起刷新。
+          抓取邮政官网网点信息和邮管局公示数据。
         </p>
 
         <div class="tool-section-title">数据来源</div>
@@ -1108,7 +1219,7 @@
           <input type="number" id="crawl-spb-concurrency" class="form-input" value="2" min="1" max="4" step="1" style="width:80px;"
                  title="仅作用于邮管局省份任务；1 = 串行，默认 2，上限 4。单个省份内部仍按页串行请求。">
           <span class="crawler-unit">个省份</span>
-          <span id="crawl-concurrency-hint" class="tool-import-status" style="margin-left:10px;color:#888;">仅作用于邮管局省份抓取；邮政官网始终串行</span>
+          <span id="crawl-concurrency-hint" class="tool-import-status" style="margin-left:10px;color:#888;">（仅作用于邮管局省份抓取；邮政官网始终串行）</span>
         </div>
         <p class="tool-desc" style="margin-top:4px;">
           注意：抓取邮管局公示信息耗时较长，请耐心等待。抓取过程中请勿关闭或刷新页面，否则可能导致数据不完整。
@@ -1138,10 +1249,8 @@
       </div>
       <div class="tool-card-body">
         <p class="tool-desc">
-          用 txt_compare.exe 对比 output 与 base 目录下的同名省份文件，生成报告并算出更新方案；
-          对比一跑完就按方案刷新应用内参考库（无需重启即可检索）。
-          确认后可把方案落到 base：当前库覆盖为 <code>{前缀}+base.csv</code>，
-          名称变化 / 撤销 / 疑似撤下的记录转入 <code>base/base_old.csv</code> 归档，
+          对比当前轮次抓取结果和参考库数据，生成报告并算出更新方案；
+          名称变化 / 撤销 / 疑似撤下的记录转为历史归档，
           营业状态变化只覆盖原有内容。
         </p>
 
@@ -1169,8 +1278,7 @@
       </div>
       <div class="tool-card-body">
         <p class="tool-desc">
-          对同一省份的邮政官网数据与邮管局备案数据做多阶名称匹配：
-          精确 → 归一化 → 疑似（公共子串）→ 模糊 → 跨区县末次，输出可人工核对的报告。
+          对同一省份的邮政官网数据与邮管局备案数据做多阶名称匹配，输出可人工核对的报告。
         </p>
 
         <div class="tool-section-title">数据目录</div>
@@ -1191,9 +1299,6 @@
           <label class="crawler-check">
             <input type="checkbox" id="cross-fuzzy"> 启用模糊匹配（较慢，结果需人工确认）
           </label>
-          <label class="crawler-field-label" style="margin-left:16px;">阈值</label>
-          <input type="number" id="cross-fuzzy-threshold" class="form-input" value="0.8"
-                 min="0.5" max="1" step="0.05" style="width:80px;" disabled>
         </div>
 
         <div class="tool-form-row" style="margin-top:10px;">

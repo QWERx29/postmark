@@ -945,13 +945,15 @@ body:has(.modal-overlay.active) #app-content { overflow: hidden; }
 /* ============================================================
    ===== 工具箱页面 =====
    ============================================================ */
-#tools-page {
+#tools-page,
+.tool-page {
   display: none;
   flex-direction: column;
   padding: 20px 24px;
   min-height: calc(100vh - 100px);
 }
 #tools-header,
+.tool-page-header,
 #po-search-header {
   display: flex;
   align-items: center;
@@ -959,15 +961,143 @@ body:has(.modal-overlay.active) #app-content { overflow: hidden; }
   margin-bottom: 20px;
 }
 #tools-header h2,
+.tool-page-header h2,
 #po-search-header h2 {
   font-size: 20px;
   font-weight: 600;
   color: #333;
 }
 #tools-container {
+  display: block;
+}
+.tools-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(480px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+}
+.tool-entry {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 16px;
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.06);
+  color: #333;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  appearance: none;
+  transition: border-color .15s, box-shadow .15s, transform .15s;
+}
+.tool-entry:hover {
+  border-color: #b7eb8f;
+  box-shadow: 0 4px 12px rgba(0,153,26,.12);
+  transform: translateY(-1px);
+}
+.tool-entry-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.tool-entry-text strong {
+  font-size: 15px;
+  font-weight: 600;
+  color: #333;
+}
+.tool-entry-text small {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #888;
+}
+.tool-entry-arrow {
+  color: #00991A;
+  font-size: 18px;
+  font-weight: 700;
+}
+.tool-page-container {
+  display: flex;
+  flex-direction: column;
+}
+.tool-uprins-status {
+  min-height: 18px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  color: #888;
+}
+.tool-uprins-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px 16px;
+  margin-bottom: 12px;
+  padding: 14px 16px;
+  background: #f6ffed;
+  border: 1px solid #b7eb8f;
+  border-radius: 6px;
+}
+.tool-uprins-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.tool-uprins-field-label {
+  font-size: 12px;
+  color: #7a8a76;
+}
+.tool-uprins-field-value {
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 15px;
+  font-weight: 700;
+  color: #007613;
+  word-break: break-all;
+}
+.tool-uprins-field-value.is-empty {
+  color: #aaa;
+  font-weight: 400;
+}
+.tool-uprins-image-wrap {
+  width: 750px;
+  max-width: 100%;
+  margin: 12px auto 0;
+  padding: 0;
+  text-align: center;
+  background: transparent;
+  border: 0;
+}
+.tool-uprins-image-caption {
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: #888;
+}
+.tool-uprins-image {
+  display: block;
+  width: 100%;
+  max-width: 750px;
+  height: auto;
+  margin: 0 auto;
+  border-radius: 4px;
+  background: #fff;
+}
+.tool-uprins-result {
+  min-height: 80px;
+  max-height: 420px;
+  margin: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  background: #fafafa;
+  border: 1px solid #f0f0f0;
+  border-radius: 4px;
+  color: #333;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* ===== 网点检索页面 (顶栏独立入口) ===== */
@@ -1220,7 +1350,7 @@ body:has(.modal-overlay.active) #app-content { overflow: hidden; }
 }
 
 @media (max-width: 768px) {
-  #tools-container {
+  .tools-grid {
     grid-template-columns: 1fr;
   }
   .tool-b64-cols {

@@ -187,6 +187,7 @@
   let recordsPageOpen = false;
   let batchModalOpen = false;
   let toolsPageOpen = false;
+  let activeToolPage = null;
   let poSearchPageOpen = false;
   let crawlerPageOpen = false;
   let postalSearchPageOpen = false;
@@ -570,8 +571,14 @@
   $('btn-records-back').addEventListener('click', hideRecordsPage);
 
   // ============================================================
-  // 工具箱页面
+  // 工具箱页面（首页 + 每页一个工具）
   // ============================================================
+  function hideActiveToolPage() {
+    if (!activeToolPage) return;
+    activeToolPage.style.display = 'none';
+    activeToolPage = null;
+  }
+
   function showToolsPage() {
     toolsPageOpen = true;
     // 先把其它页面收起来（hide* 会把主视图恢复成可见），再隐藏主视图
@@ -583,16 +590,43 @@
     if (mailPageOpen) hideMailPage();
     if (meterPageOpen) hideMeterPage();
     if (galleryPageOpen) hideGalleryPage();
+    hideActiveToolPage();
     $('main-container').style.display = 'none';
     $('btn-add-record-fab').style.display = 'none';
     toolsPage.style.display = 'flex';
+    setActiveNav('tools');
+  }
+
+  /** 打开工具箱里的某个工具页；key 对应页面 id 的 tool-<key>-page */
+  function showToolPage(key) {
+    const page = $('tool-' + key + '-page');
+    if (!page) return;
+
+    toolsPageOpen = true;
+    if (recordsPageOpen) hideRecordsPage();
+    if (poSearchPageOpen) hidePOSearchPage();
+    if (crawlerPageOpen) hideCrawlerPage();
+    if (postalSearchPageOpen) hidePostalSearchPage();
+    if (postalCrawlerPageOpen) hidePostalCrawlerPage();
+    if (mailPageOpen) hideMailPage();
+    if (meterPageOpen) hideMeterPage();
+    if (galleryPageOpen) hideGalleryPage();
+    hideActiveToolPage();
+
+    activeToolPage = page;
+    $('main-container').style.display = 'none';
+    $('btn-add-record-fab').style.display = 'none';
+    toolsPage.style.display = 'none';
+    page.style.display = 'flex';
+
     // 网点数据在启动后才从 base 目录导入，进入页面时重建「随机网点」的筛选下拉
-    if (typeof Tools !== 'undefined') Tools.refreshRandomPO();
+    if (key === 'random' && typeof Tools !== 'undefined') Tools.refreshRandomPO();
     setActiveNav('tools');
   }
 
   function hideToolsPage() {
     toolsPageOpen = false;
+    hideActiveToolPage();
     toolsPage.style.display = 'none';
     $('main-container').style.display = '';
     $('btn-add-record-fab').style.display = '';
@@ -601,6 +635,14 @@
 
   $('btn-show-tools').addEventListener('click', showToolsPage);
   $('btn-tools-back').addEventListener('click', hideToolsPage);
+
+  // 工具箱首页的入口卡片 → 对应工具页；工具页的返回按钮 → 工具箱首页
+  document.querySelectorAll('#tools-page [data-tool]').forEach((el) => {
+    el.addEventListener('click', () => showToolPage(el.dataset.tool));
+  });
+  document.querySelectorAll('[data-tool-back]').forEach((el) => {
+    el.addEventListener('click', showToolsPage);
+  });
 
   // ============================================================
   // 网点检索页面
