@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- 17TRACK 的接口会把 referrer 含 127.0.0.1 的请求判为非法（返回 -10，显示 Verification failed），
+     这里不发送 referrer，让查询组件走正常的验证流程 -->
+<meta name="referrer" content="no-referrer">
 <title>新一代集邮管理系统</title>
 <!-- ECharts (本地) -->
 <script src="node_modules/echarts/dist/echarts.min.js"></script>
@@ -10,8 +13,6 @@
 <script src="node_modules/xlsx/dist/xlsx.full.min.js"></script>
 <!-- JsBarcode for barcode generation (本地) -->
 <script src="node_modules/jsbarcode/dist/JsBarcode.all.min.js"></script>
-<!-- Ship24 包裹查询组件（官方要求放在 head 里） -->
-<script type="text/javascript" src="https://cdn.ship24.com/assets/js/ship24-tracking-widget.js?v=1"></script>
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -112,6 +113,10 @@
       <button type="button" class="nav-item nav-item-top" id="btn-show-tools" data-page="tools">
         <svg class="nav-ico" viewBox="0 0 24 24"><rect x="3" y="7.5" width="18" height="12.5" rx="2"/><path d="M9 7.5v-2a2 2 0 012-2h2a2 2 0 012 2v2"/><path d="M3 12.5h18"/></svg>
         <span>工具箱</span>
+      </button>
+      <button type="button" class="nav-item nav-item-top" id="btn-show-statistics" data-page="statistics" title="统计">
+        <svg class="nav-ico" viewBox="0 0 24 24"><path d="M3 20h18"/><path d="M6 20v-7M11 20V6M16 20v-4M21 20V9"/></svg>
+        <span>统计</span>
       </button>
     </nav>
 
@@ -466,7 +471,7 @@
 <!-- ===== 邮戳图片（照片画廊） ===== -->
 <div id="gallery-page" style="display:none;">
   <div id="gallery-header">
-    <h2>[ 邮戳图片 ]</h2>
+    <h2>邮戳图片</h2>
     <button id="btn-gallery-back" class="btn-secondary">← 返回</button>
   </div>
   <div id="gallery-toolbar">
@@ -675,13 +680,12 @@
 <!-- ===== 工具箱首页 ===== -->
 <div id="tools-page" style="display:none;">
   <div id="tools-header">
-    <h2>[ 常用工具箱 ]</h2>
+    <h2>常用工具箱</h2>
     <button id="btn-tools-back" class="btn-secondary">← 返回</button>
   </div>
   <div id="tools-container">
     <div class="tools-grid">
       <button type="button" class="tool-entry" data-tool="inst">
-        <span class="tool-icon">[#]</span>
         <span class="tool-entry-text">
           <strong>机构号生成器</strong>
           <small>根据 6 位邮政编码生成 8 位机构号</small>
@@ -690,7 +694,6 @@
       </button>
 
       <button type="button" class="tool-entry" data-tool="barcode">
-        <span class="tool-icon">[码]</span>
         <span class="tool-entry-text">
           <strong>信函条码校验与生成</strong>
           <small>校验 13 位信函条码，或按序列号批量生成</small>
@@ -699,7 +702,6 @@
       </button>
 
       <button type="button" class="tool-entry" data-tool="barcode-show">
-        <span class="tool-icon">[条]</span>
         <span class="tool-entry-text">
           <strong>条码展示</strong>
           <small>把条码号渲染成 CODE128 / EAN-13 等条形码</small>
@@ -708,7 +710,6 @@
       </button>
 
       <button type="button" class="tool-entry" data-tool="random">
-        <span class="tool-icon">[随]</span>
         <span class="tool-entry-text">
           <strong>随机网点</strong>
           <small>按来源和行政区划从参考库随机抽取网点</small>
@@ -717,7 +718,6 @@
       </button>
 
       <button type="button" class="tool-entry" data-tool="uprins">
-        <span class="tool-icon">[戳]</span>
         <span class="tool-entry-text">
           <strong>机戳查询</strong>
           <small>通过二维码链接解析机戳信息</small>
@@ -731,13 +731,12 @@
 <!-- ===== 工具箱 · 机构号生成器 ===== -->
 <div id="tool-inst-page" class="tool-page" style="display:none;">
   <div class="tool-page-header">
-    <h2>[ 工具箱 · 机构号生成器 ]</h2>
+    <h2>工具箱 · 机构号生成器</h2>
     <button type="button" class="btn-secondary" data-tool-back>← 返回工具箱</button>
   </div>
   <div class="tool-page-container">
     <div class="tool-card">
       <div class="tool-card-header">
-        <span class="tool-icon">[#]</span>
         <h3>机构号生成器</h3>
       </div>
       <div class="tool-card-body">
@@ -763,13 +762,12 @@
 <!-- ===== 工具箱 · 信函条码校验与生成 ===== -->
 <div id="tool-barcode-page" class="tool-page" style="display:none;">
   <div class="tool-page-header">
-    <h2>[ 工具箱 · 信函条码校验与生成 ]</h2>
+    <h2>工具箱 · 信函条码校验与生成</h2>
     <button type="button" class="btn-secondary" data-tool-back>← 返回工具箱</button>
   </div>
   <div class="tool-page-container">
     <div class="tool-card">
       <div class="tool-card-header">
-        <span class="tool-icon">[码]</span>
         <h3>信函条码校验与生成</h3>
       </div>
       <div class="tool-card-body">
@@ -813,13 +811,12 @@
 <!-- ===== 工具箱 · 条码展示 ===== -->
 <div id="tool-barcode-show-page" class="tool-page" style="display:none;">
   <div class="tool-page-header">
-    <h2>[ 工具箱 · 条码展示 ]</h2>
+    <h2>工具箱 · 条码展示</h2>
     <button type="button" class="btn-secondary" data-tool-back>← 返回工具箱</button>
   </div>
   <div class="tool-page-container">
     <div class="tool-card">
       <div class="tool-card-header">
-        <span class="tool-icon">[条]</span>
         <h3>条码展示</h3>
       </div>
       <div class="tool-card-body">
@@ -864,13 +861,12 @@
 <!-- ===== 工具箱 · 随机网点 ===== -->
 <div id="tool-random-page" class="tool-page" style="display:none;">
   <div class="tool-page-header">
-    <h2>[ 工具箱 · 随机网点 ]</h2>
+    <h2>工具箱 · 随机网点</h2>
     <button type="button" class="btn-secondary" data-tool-back>← 返回工具箱</button>
   </div>
   <div class="tool-page-container">
     <div class="tool-card">
       <div class="tool-card-header">
-        <span class="tool-icon">[随]</span>
         <h3>随机网点</h3>
       </div>
       <div class="tool-card-body">
@@ -916,13 +912,12 @@
 <!-- ===== 工具箱 · 机戳查询 ===== -->
 <div id="tool-uprins-page" class="tool-page" style="display:none;">
   <div class="tool-page-header">
-    <h2>[ 工具箱 · 机戳查询 ]</h2>
+    <h2>工具箱 · 机戳查询</h2>
     <button type="button" class="btn-secondary" data-tool-back>← 返回工具箱</button>
   </div>
   <div class="tool-page-container">
     <div class="tool-card">
       <div class="tool-card-header">
-        <span class="tool-icon">[戳]</span>
         <h3>机戳查询</h3>
       </div>
       <div class="tool-card-body">
@@ -953,16 +948,293 @@
   </div>
 </div>
 
+<!-- ===== 统计页（多图表数据看板） ===== -->
+<div id="statistics-page" style="display:none;">
+  <div id="statistics-header">
+    <h2>数据统计</h2>
+    <div class="statistics-actions">
+      <span class="statistics-hint">汇总本机日戳、邮资机戳、邮件、退信与邮戳图片，并细化上海数据</span>
+      <button type="button" id="btn-statistics-refresh" class="btn-small" title="重新汇总当前数据">刷新</button>
+      <button type="button" id="btn-statistics-back" class="btn-secondary">← 返回总览</button>
+    </div>
+  </div>
+
+  <div id="statistics-body">
+    <!-- 概览卡片 -->
+    <div class="stat-kpi-grid">
+      <div class="stat-kpi">
+        <div class="stat-kpi-label">日戳记录</div>
+        <div class="stat-kpi-value" id="stat-kpi-records">0</div>
+        <div class="stat-kpi-sub" id="stat-kpi-records-sub">本月盖销 +0 · 有日期 0 条</div>
+      </div>
+      <div class="stat-kpi">
+        <div class="stat-kpi-label">覆盖范围</div>
+        <div class="stat-kpi-value"><span id="stat-kpi-provinces">0</span><span class="stat-kpi-unit">省</span></div>
+        <div class="stat-kpi-sub" id="stat-kpi-coverage-sub">市 0 · 县 0</div>
+      </div>
+      <div class="stat-kpi">
+        <div class="stat-kpi-label">网点覆盖率</div>
+        <div class="stat-kpi-value" id="stat-kpi-rate">0%</div>
+        <div class="stat-kpi-sub" id="stat-kpi-rate-sub">参考库尚未导入</div>
+      </div>
+      <div class="stat-kpi">
+        <div class="stat-kpi-label">邮资机戳</div>
+        <div class="stat-kpi-value" id="stat-kpi-meters">0</div>
+        <div class="stat-kpi-sub" id="stat-kpi-meters-sub">覆盖 0 省 · 本月打印 +0</div>
+      </div>
+      <div class="stat-kpi">
+        <div class="stat-kpi-label">邮戳图片</div>
+        <div class="stat-kpi-value" id="stat-kpi-photos">0</div>
+        <div class="stat-kpi-sub" id="stat-kpi-photos-sub">来自 0 条记录</div>
+      </div>
+      <div class="stat-kpi">
+        <div class="stat-kpi-label">邮件往来</div>
+        <div class="stat-kpi-value" id="stat-kpi-mails">0</div>
+        <div class="stat-kpi-sub" id="stat-kpi-mails-sub">待发 0 · 在途 0 · 妥收 0</div>
+      </div>
+      <div class="stat-kpi">
+        <div class="stat-kpi-label">国际退信</div>
+        <div class="stat-kpi-value" id="stat-kpi-returns">0</div>
+        <div class="stat-kpi-sub" id="stat-kpi-returns-sub">收到 0 件 · 涉及 0 个国家/地区</div>
+      </div>
+      <div class="stat-kpi">
+        <div class="stat-kpi-label">风景 / 文化日戳</div>
+        <div class="stat-kpi-value" id="stat-kpi-scenic">0</div>
+        <div class="stat-kpi-sub" id="stat-kpi-scenic-sub">来自 0 条记录</div>
+      </div>
+    </div>
+
+    <!-- 图表区 -->
+    <div class="stat-chart-grid">
+      <section class="stat-card stat-span-2">
+        <div class="stat-card-head">
+          <h3>省份收集排行</h3>
+          <span class="stat-card-note" id="stat-province-note"></span>
+        </div>
+        <div id="stat-chart-province" class="stat-chart tall"></div>
+      </section>
+
+      <section class="stat-card stat-span-2">
+        <div class="stat-card-head">
+          <h3>采集趋势</h3>
+          <span class="stat-card-note" id="stat-trend-note"></span>
+        </div>
+        <div id="stat-chart-trend" class="stat-chart trend"></div>
+      </section>
+
+      <section class="stat-card stat-span-2">
+        <div class="stat-card-head">
+          <h3>采集日历</h3>
+          <span class="stat-card-tools">
+            <span class="stat-card-note" id="stat-calendar-note"></span>
+            <select id="stat-calendar-year" class="form-select" title="选择年份"></select>
+          </span>
+        </div>
+        <div id="stat-chart-calendar" class="stat-chart calendar"></div>
+      </section>
+
+      <section class="stat-card">
+        <div class="stat-card-head">
+          <h3>邮局状态构成</h3>
+          <span class="stat-card-note" id="stat-status-note"></span>
+        </div>
+        <div id="stat-chart-status" class="stat-chart"></div>
+      </section>
+
+      <section class="stat-card">
+        <div class="stat-card-head">
+          <h3>材质分布</h3>
+          <span class="stat-card-note" id="stat-material-note"></span>
+        </div>
+        <div id="stat-chart-material" class="stat-chart"></div>
+      </section>
+
+      <section class="stat-card">
+        <div class="stat-card-head">
+          <h3>戳号使用频次</h3>
+          <span class="stat-card-note" id="stat-stamp-note"></span>
+        </div>
+        <div id="stat-chart-stamp" class="stat-chart"></div>
+      </section>
+
+      <section class="stat-card">
+        <div class="stat-card-head">
+          <h3>日戳采集时段</h3>
+          <span class="stat-card-note" id="stat-hour-note"></span>
+        </div>
+        <div id="stat-chart-hour" class="stat-chart"></div>
+      </section>
+
+      <section class="stat-card">
+        <div class="stat-card-head">
+          <h3>全国网点覆盖率</h3>
+          <span class="stat-card-note" id="stat-gauge-note"></span>
+        </div>
+        <div id="stat-chart-gauge" class="stat-chart"></div>
+      </section>
+
+      <section class="stat-card">
+        <div class="stat-card-head">
+          <h3>邮件状态</h3>
+          <span class="stat-card-note" id="stat-mail-note"></span>
+        </div>
+        <div id="stat-chart-mail" class="stat-chart"></div>
+      </section>
+
+      <section class="stat-card">
+        <div class="stat-card-head">
+          <h3>国际退信进度</h3>
+          <span class="stat-card-note" id="stat-return-note"></span>
+        </div>
+        <div id="stat-chart-return" class="stat-chart"></div>
+      </section>
+
+      <section class="stat-card">
+        <div class="stat-card-head">
+          <h3>邮资机型号 Top 10</h3>
+          <span class="stat-card-note" id="stat-meter-note"></span>
+        </div>
+        <div id="stat-chart-meter" class="stat-chart meter"></div>
+      </section>
+    </div>
+
+    <!-- 上海市细化：区县 / 戳号 / 月度 / 网点 -->
+    <section class="stat-shanghai">
+      <div class="stat-section-head">
+        <div>
+          <h3>上海市细化</h3>
+          <p class="stat-section-desc">按区县、戳号、月份和网点拆解上海数据</p>
+        </div>
+        <span class="stat-card-note" id="stat-shanghai-note"></span>
+      </div>
+
+      <div class="stat-sh-kpi-grid">
+        <div class="stat-sh-kpi">
+          <span class="stat-sh-kpi-label">日戳记录</span>
+          <span class="stat-sh-kpi-value" id="stat-sh-records">0</span>
+        </div>
+        <div class="stat-sh-kpi">
+          <span class="stat-sh-kpi-label">覆盖区县</span>
+          <span class="stat-sh-kpi-value" id="stat-sh-districts">0 / 16</span>
+        </div>
+        <div class="stat-sh-kpi">
+          <span class="stat-sh-kpi-label">邮资机戳</span>
+          <span class="stat-sh-kpi-value" id="stat-sh-meters">0</span>
+        </div>
+        <div class="stat-sh-kpi">
+          <span class="stat-sh-kpi-label">邮戳图片</span>
+          <span class="stat-sh-kpi-value" id="stat-sh-photos">0</span>
+        </div>
+      </div>
+
+      <div class="stat-table-grid">
+        <section class="stat-table-card stat-table-span-2">
+          <div class="stat-card-head">
+            <h3>区县收集情况</h3>
+            <span class="stat-card-note" id="stat-sh-district-note"></span>
+          </div>
+          <div class="stat-table-wrap">
+            <table class="stat-table">
+              <thead>
+                <tr>
+                  <th>区县</th>
+                  <th>日戳</th>
+                  <th>网点</th>
+                  <th>戳号</th>
+                  <th>营业中</th>
+                  <th>主题/临时</th>
+                  <th>已撤销</th>
+                  <th>其他</th>
+                  <th>邮资机</th>
+                  <th>图片</th>
+                  <th>最近盖销</th>
+                </tr>
+              </thead>
+              <tbody id="stat-sh-district-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="stat-table-card">
+          <div class="stat-card-head">
+            <h3>戳号分布</h3>
+            <span class="stat-card-note" id="stat-sh-stamp-note"></span>
+          </div>
+          <div class="stat-table-wrap">
+            <table class="stat-table">
+              <thead>
+                <tr>
+                  <th>戳号</th>
+                  <th>记录</th>
+                  <th>网点</th>
+                  <th>区县</th>
+                  <th>最近盖销</th>
+                </tr>
+              </thead>
+              <tbody id="stat-sh-stamp-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="stat-table-card">
+          <div class="stat-card-head">
+            <h3>月度采集</h3>
+            <span class="stat-card-note" id="stat-sh-month-note"></span>
+          </div>
+          <div class="stat-table-wrap">
+            <table class="stat-table">
+              <thead>
+                <tr>
+                  <th>月份</th>
+                  <th>日戳</th>
+                  <th>邮资机</th>
+                  <th>图片</th>
+                  <th>活跃网点</th>
+                </tr>
+              </thead>
+              <tbody id="stat-sh-month-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="stat-table-card stat-table-span-2">
+          <div class="stat-card-head">
+            <h3>网点明细</h3>
+            <span class="stat-card-note" id="stat-sh-office-note"></span>
+          </div>
+          <div class="stat-table-wrap">
+            <table class="stat-table">
+              <thead>
+                <tr>
+                  <th>网点</th>
+                  <th>区县</th>
+                  <th>邮编</th>
+                  <th>机构号</th>
+                  <th>状态</th>
+                  <th>记录</th>
+                  <th>戳号</th>
+                  <th>最近盖销</th>
+                  <th>图片</th>
+                </tr>
+              </thead>
+              <tbody id="stat-sh-office-body"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </section>
+  </div>
+</div>
+
 <!-- ===== 网点检索页面 ===== -->
 <div id="po-search-page" style="display:none;">
   <div id="po-search-header">
-    <h2>[ 网点检索 ]</h2>
+    <h2>网点检索</h2>
     <button id="btn-po-search-back" class="btn-secondary">← 返回</button>
   </div>
   <div id="po-search-container">
     <div class="tool-card">
       <div class="tool-card-header">
-        <span class="tool-icon">[搜]</span>
         <h3>网点检索</h3>
       </div>
       <div class="tool-card-body">
@@ -1034,13 +1306,12 @@
 <!-- ===== 港澳台网点 · 网点查询 ===== -->
 <div id="postal-search-page" style="display:none;">
   <div id="postal-search-header">
-    <h2>[ 港澳台网点 · 网点查询 ]</h2>
+    <h2>港澳台网点 · 网点查询</h2>
     <button id="btn-postal-search-back" class="btn-secondary">← 返回</button>
   </div>
   <div id="postal-search-container">
     <div class="tool-card">
       <div class="tool-card-header">
-        <span class="tool-icon">[搜]</span>
         <h3>港澳台网点查询</h3>
       </div>
       <div class="tool-card-body">
@@ -1093,13 +1364,12 @@
 <!-- ===== 港澳台网点 · 数据抓取 ===== -->
 <div id="postal-crawler-page" style="display:none;">
   <div id="postal-crawler-header">
-    <h2>[ 港澳台网点 · 数据抓取 ]</h2>
+    <h2>港澳台网点 · 数据抓取</h2>
     <button id="btn-postal-crawler-back" class="btn-secondary">← 返回</button>
   </div>
   <div id="postal-crawler-container">
     <div class="tool-card">
       <div class="tool-card-header">
-        <span class="tool-icon">[抓]</span>
         <h3>抓取港澳台网点</h3>
       </div>
       <div class="tool-card-body">
@@ -1143,7 +1413,6 @@
 
     <div class="tool-card">
       <div class="tool-card-header">
-        <span class="tool-icon">[文]</span>
         <h3>当前数据文件</h3>
       </div>
       <div class="tool-card-body">
@@ -1175,7 +1444,7 @@
 <!-- ===== 数据抓取页面 ===== -->
 <div id="crawler-page" style="display:none;">
   <div id="crawler-header">
-    <h2>[ 数据抓取 ]</h2>
+    <h2>数据抓取</h2>
     <button id="btn-crawler-back" class="btn-secondary">← 返回</button>
   </div>
   <div id="crawler-container">
@@ -1183,7 +1452,6 @@
     <!-- 面板1: 爬取数据 -->
     <div class="tool-card">
       <div class="tool-card-header">
-        <span class="tool-icon">[抓]</span>
         <h3>爬取数据</h3>
       </div>
       <div class="tool-card-body">
@@ -1244,7 +1512,6 @@
     <!-- 面板2: 对比并更新 base -->
     <div class="tool-card">
       <div class="tool-card-header">
-        <span class="tool-icon">[比]</span>
         <h3>对比并更新 base</h3>
       </div>
       <div class="tool-card-body">
@@ -1273,7 +1540,6 @@
     <!-- 面板3: 横向对比 -->
     <div class="tool-card">
       <div class="tool-card-header">
-        <span class="tool-icon">[横]</span>
         <h3>横向对比（邮政 vs 邮管）</h3>
       </div>
       <div class="tool-card-body">
@@ -1319,7 +1585,7 @@
 <!-- ===== 邮件管理（「国际退信」「待发 / 在途 / 妥收」「查询」均已接入） ===== -->
 <div id="mail-page" style="display:none;">
   <div id="mail-header">
-    <h2 id="mail-page-title">[ 邮件管理 ]</h2>
+    <h2 id="mail-page-title">邮件管理</h2>
     <button id="btn-mail-back" class="btn-secondary">← 返回</button>
   </div>
   <div id="mail-container">
@@ -1332,23 +1598,56 @@
       </div>
     </div>
 
-    <!-- 查询卡片：Ship24 包裹查询组件 -->
+    <!-- 查询卡片：17TRACK 包裹查询组件 -->
     <div class="tool-card" id="mail-track-card" style="display:none;">
       <div class="tool-card-header">
-        <span class="tool-icon">[查]</span>
         <h3>邮件查询</h3>
       </div>
       <div class="tool-card-body">
         <p class="tool-desc">
-          输入运单号后查询，结果由 Ship24 在线服务返回（需联网）。
+          输入运单号后查询，结果由 17TRACK 在线服务返回（需联网）。
         </p>
-        <ship24-tracking-widget title="" placeholder="" button-color="#fbb116" button-text-color="#312E81" button-text=""></ship24-tracking-widget>
+        <!--单号输入框。-->
+        <div class="tool-form-row">
+          <input type="text" id="YQNum" class="form-input" maxlength="50" placeholder="输入运单号，如 RR123456789CN" autocomplete="off" />
+          <!--用于调用脚本方法的按钮。-->
+          <input type="button" class="tool-btn-primary" value="查询" onclick="doTrack()" />
+        </div>
+        <!--用于显示查询结果的容器。-->
+        <div id="YQContainer"></div>
+
+        <!--脚本代码可放于页面底部，等到页面最后执行。-->
+        <script type="text/javascript" src="//www.17track.net/externalcall.js"></script>
+        <script type="text/javascript">
+        function doTrack() {
+        var num = document.getElementById("YQNum").value;
+        if(num==="") {
+            alert("请输入运单号。");
+            return;
+        }
+        YQV5.trackSingle({
+            //必须，指定承载内容的容器ID。
+            YQ_ContainerId:"YQContainer",
+            //可选，指定查询结果高度，最大为800px，默认为560px。
+            YQ_Height:560,
+            //可选，指定运输商，默认为自动识别。
+            YQ_Fc:"0",
+            //可选，指定UI语言，默认根据浏览器自动识别。
+            YQ_Lang:"zh-cn",
+            //必须，指定要查询的单号。
+            YQ_Num:num
+        });
+        }
+        // 回车触发查询（输入法组字期间不触发）
+        document.getElementById("YQNum").addEventListener("keydown", function (e) {
+            if (e.key === "Enter" && !e.isComposing) doTrack();
+        });
+        </script>
       </div>
     </div>
     <!-- 国际退信卡片：一件寄往境外的邮件被退回、直至收回的全过程 -->
     <div class="tool-card" id="mail-return-card" style="display:none;">
       <div class="tool-card-header">
-        <span class="tool-icon">[退]</span>
         <h3>国际退信</h3>
         <div class="mail-list-toolbar">
           <span id="return-count" class="mail-list-count">共 0 条</span>
@@ -1402,7 +1701,6 @@
     <!-- 列表卡片：待发 / 在途 / 妥收 共用一张表，按状态过滤 -->
     <div class="tool-card" id="mail-list-card" style="display:none;">
       <div class="tool-card-header">
-        <span class="tool-icon" id="mail-list-icon">[邮]</span>
         <h3 id="mail-list-card-title">待发</h3>
         <div class="mail-list-toolbar">
           <span id="mail-list-count" class="mail-list-count">共 0 条</span>
@@ -1693,6 +1991,7 @@
 <script src="js/postodb.js"></script>
 <script src="js/postal-store.js"></script>
 <script src="js/stats.js"></script>
+<script src="js/statistics.js"></script>
 <script src="js/map.js"></script>
 <script src="js/img-naming.js"></script>
 <script src="js/image.js"></script>

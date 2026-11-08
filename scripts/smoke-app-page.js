@@ -94,7 +94,7 @@ need('#f-photo-list', '图片缩略图容器');
 need('#sidebar', '侧边栏');
 need('#btn-show-overview', '侧边栏「总览」入口');
 need('#mail-track-card', '邮件管理「查询」卡片');
-need('ship24-tracking-widget', 'Ship24 查询组件');
+need('#YQNum', '17TRACK 单号输入框');
 need('#mail-list-card', '待发/在途/妥收 列表卡片');
 need('#mail-tbody', '邮件表 tbody');
 need('#mail-form-overlay', '邮件记录表单模态框');
@@ -148,8 +148,9 @@ if (typeof RecordStore === 'undefined') issues.push('RecordStore 未加载');
 else mods.push('RecordStore');
 if (typeof Tools === 'undefined') issues.push('Tools 未加载');
 else mods.push('Tools');
-// Ship24 查询组件：head 里的外部脚本 + body 里的自定义元素（离线时脚本可能没加载，只校验元素在位）
-if (!document.querySelector('ship24-tracking-widget')) issues.push('缺少 Ship24 查询组件元素');
+// 17TRACK 查询组件：externalcall.js 在线脚本 + #YQNum / #YQContainer（离线时脚本可能没加载，只校验元素在位）
+if (!document.querySelector('#YQNum')) issues.push('缺少 17TRACK 单号输入框');
+if (!document.querySelector('#YQContainer')) issues.push('缺少 17TRACK 查询结果容器');
 if (typeof MailStore === 'undefined') issues.push('MailStore 未加载');
 else mods.push('MailStore');
 if (typeof MailList === 'undefined') issues.push('MailList 未加载');
@@ -665,7 +666,7 @@ try {
     if (row.textContent.includes('北京互换局') || row.textContent.includes(NOTE_XSS)) {
       issues.push('邮路信息 / 备注不应出现在列表里');
     }
-    // 邮件号码只是展示（查询改由 Ship24 组件承载，列表不再做跳转按钮）
+    // 邮件号码只是展示（查询改由 17TRACK 组件承载，列表不再做跳转按钮）
     if (!row.textContent.includes('RR123456789CN')) issues.push('邮件号码应显示在列表里');
 
     // 单击「寄达地」→ 详情弹窗展示邮路与备注（含转义）

@@ -70,6 +70,10 @@
 
   btnSidebarToggle.addEventListener('click', () => {
     setSidebarCollapsed(!appShell.classList.contains('sidebar-collapsed'), true);
+    // 侧边栏宽度动画结束后，统计页的 ECharts 需要按新宽度重算
+    if (typeof StatisticsPage !== 'undefined' && StatisticsPage.isVisible()) {
+      setTimeout(() => StatisticsPage.resize(), 260);
+    }
   });
 
   // ============================================================
@@ -139,6 +143,13 @@
     }
   }
 
+  /** 统计页可见时才重绘，隐藏时留到下次进入页面再汇总 */
+  function refreshStatisticsIfVisible() {
+    if (typeof StatisticsPage !== 'undefined' && StatisticsPage.isVisible()) {
+      StatisticsPage.refresh();
+    }
+  }
+
   // ============================================================
   // 地图回调
   // ============================================================
@@ -170,14 +181,27 @@
   // ============================================================
   RecordStore.onChange(() => {
     refreshAllViews();
+    refreshStatisticsIfVisible();
     if (recordsPageOpen) renderRecordsTable(recordsSearch.value);
     // 新增/修改记录后，港澳台查询页的「已收集」标绿要立即跟着变
     if (postalSearchPageOpen && typeof PostalPage !== 'undefined') PostalPage.refreshSearch();
   });
 
+  // 邮资机戳 / 邮件 / 国际退信也有自己的数据表，统计页打开时跟着刷新
+  if (typeof MeterStore !== 'undefined' && typeof MeterStore.onChange === 'function') {
+    MeterStore.onChange(refreshStatisticsIfVisible);
+  }
+  if (typeof MailStore !== 'undefined' && typeof MailStore.onChange === 'function') {
+    MailStore.onChange(refreshStatisticsIfVisible);
+  }
+  if (typeof ReturnStore !== 'undefined' && typeof ReturnStore.onChange === 'function') {
+    ReturnStore.onChange(refreshStatisticsIfVisible);
+  }
+
   // 港澳台抓取完成/重新载入后，首页排名表的「总计」要跟着变
   window.addEventListener('postal-data-changed', () => {
     refreshStatsOnly();
+    refreshStatisticsIfVisible();
     if (postalSearchPageOpen && typeof PostalPage !== 'undefined') PostalPage.refreshSearch();
   });
 
@@ -195,6 +219,7 @@
   let mailPageOpen = false;
   let meterPageOpen = false;
   let galleryPageOpen = false;
+  let statisticsPageOpen = false;
   const toolsPage = $('tools-page');
   const poSearchPage = $('po-search-page');
   const crawlerPage = $('crawler-page');
@@ -203,6 +228,7 @@
   const mailPage = $('mail-page');
   const meterPage = $('meter-page');
   const galleryPage = $('gallery-page');
+  const statisticsPage = $('statistics-page');
   const mailPageTitle = $('mail-page-title');
   const mailPlaceholderTitle = $('mail-placeholder-title');
   const mailPlaceholderCard = $('mail-placeholder-card');
@@ -237,6 +263,7 @@
   function showRecordsPage() {
     recordsPageOpen = true;
     // 收起其它页面（侧边栏随时可点，这里必须保证同一时刻只有一个页面）
+    if (statisticsPageOpen) hideStatisticsPage();
     if (toolsPageOpen) hideToolsPage();
     if (poSearchPageOpen) hidePOSearchPage();
     if (crawlerPageOpen) hideCrawlerPage();
@@ -583,6 +610,7 @@
     toolsPageOpen = true;
     // 先把其它页面收起来（hide* 会把主视图恢复成可见），再隐藏主视图
     if (recordsPageOpen) hideRecordsPage();
+    if (statisticsPageOpen) hideStatisticsPage();
     if (poSearchPageOpen) hidePOSearchPage();
     if (crawlerPageOpen) hideCrawlerPage();
     if (postalSearchPageOpen) hidePostalSearchPage();
@@ -604,6 +632,7 @@
 
     toolsPageOpen = true;
     if (recordsPageOpen) hideRecordsPage();
+    if (statisticsPageOpen) hideStatisticsPage();
     if (poSearchPageOpen) hidePOSearchPage();
     if (crawlerPageOpen) hideCrawlerPage();
     if (postalSearchPageOpen) hidePostalSearchPage();
@@ -651,6 +680,7 @@
     poSearchPageOpen = true;
     if (recordsPageOpen) hideRecordsPage();
     if (toolsPageOpen) hideToolsPage();
+    if (statisticsPageOpen) hideStatisticsPage();
     if (crawlerPageOpen) hideCrawlerPage();
     if (postalSearchPageOpen) hidePostalSearchPage();
     if (postalCrawlerPageOpen) hidePostalCrawlerPage();
@@ -683,6 +713,7 @@
     crawlerPageOpen = true;
     if (recordsPageOpen) hideRecordsPage();
     if (toolsPageOpen) hideToolsPage();
+    if (statisticsPageOpen) hideStatisticsPage();
     if (poSearchPageOpen) hidePOSearchPage();
     if (postalSearchPageOpen) hidePostalSearchPage();
     if (postalCrawlerPageOpen) hidePostalCrawlerPage();
@@ -717,6 +748,7 @@
     setPostalNavExpanded(true);
     if (recordsPageOpen) hideRecordsPage();
     if (toolsPageOpen) hideToolsPage();
+    if (statisticsPageOpen) hideStatisticsPage();
     if (poSearchPageOpen) hidePOSearchPage();
     if (crawlerPageOpen) hideCrawlerPage();
     if (postalCrawlerPageOpen) hidePostalCrawlerPage();
@@ -743,6 +775,7 @@
     setPostalNavExpanded(true);
     if (recordsPageOpen) hideRecordsPage();
     if (toolsPageOpen) hideToolsPage();
+    if (statisticsPageOpen) hideStatisticsPage();
     if (poSearchPageOpen) hidePOSearchPage();
     if (crawlerPageOpen) hideCrawlerPage();
     if (postalSearchPageOpen) hidePostalSearchPage();
@@ -779,6 +812,7 @@
     meterPageOpen = true;
     if (recordsPageOpen) hideRecordsPage();
     if (toolsPageOpen) hideToolsPage();
+    if (statisticsPageOpen) hideStatisticsPage();
     if (poSearchPageOpen) hidePOSearchPage();
     if (crawlerPageOpen) hideCrawlerPage();
     if (postalSearchPageOpen) hidePostalSearchPage();
@@ -810,6 +844,7 @@
     galleryPageOpen = true;
     if (recordsPageOpen) hideRecordsPage();
     if (toolsPageOpen) hideToolsPage();
+    if (statisticsPageOpen) hideStatisticsPage();
     if (poSearchPageOpen) hidePOSearchPage();
     if (crawlerPageOpen) hideCrawlerPage();
     if (postalSearchPageOpen) hidePostalSearchPage();
@@ -838,11 +873,49 @@
   $('btn-gallery-back').addEventListener('click', hideGalleryPage);
 
   // ============================================================
+  // 统计页面（多图表数据看板）
+  // ============================================================
+  function showStatisticsPage() {
+    statisticsPageOpen = true;
+    if (recordsPageOpen) hideRecordsPage();
+    if (toolsPageOpen) hideToolsPage();
+    if (poSearchPageOpen) hidePOSearchPage();
+    if (crawlerPageOpen) hideCrawlerPage();
+    if (postalSearchPageOpen) hidePostalSearchPage();
+    if (postalCrawlerPageOpen) hidePostalCrawlerPage();
+    if (mailPageOpen) hideMailPage();
+    if (meterPageOpen) hideMeterPage();
+    if (galleryPageOpen) hideGalleryPage();
+    $('main-container').style.display = 'none';
+    $('btn-add-record-fab').style.display = 'none';
+    statisticsPage.style.display = 'flex';
+    // 进入页面时重新汇总，保证看到的是当前数据
+    if (typeof StatisticsPage !== 'undefined') StatisticsPage.show();
+    setActiveNav('statistics');
+  }
+
+  function hideStatisticsPage() {
+    statisticsPageOpen = false;
+    statisticsPage.style.display = 'none';
+    $('main-container').style.display = '';
+    $('btn-add-record-fab').style.display = '';
+    if (typeof StatisticsPage !== 'undefined') StatisticsPage.hide();
+    setActiveNav('overview');
+  }
+
+  $('btn-show-statistics').addEventListener('click', showStatisticsPage);
+  $('btn-statistics-back').addEventListener('click', hideStatisticsPage);
+  $('btn-statistics-refresh').addEventListener('click', () => {
+    if (typeof StatisticsPage !== 'undefined') StatisticsPage.refresh();
+  });
+
+  // ============================================================
   // 地图总览页面（侧边栏第一项）
   // ============================================================
   function showOverviewPage() {
     if (recordsPageOpen) hideRecordsPage();
     if (toolsPageOpen) hideToolsPage();
+    if (statisticsPageOpen) hideStatisticsPage();
     if (poSearchPageOpen) hidePOSearchPage();
     if (crawlerPageOpen) hideCrawlerPage();
     if (postalSearchPageOpen) hidePostalSearchPage();
@@ -861,7 +934,7 @@
   // ============================================================
   // 邮件管理页面
   //   mail-pending / mail-transit / mail-delivered → 共用一张表的三个状态视图
-  //   mail-query                                   → Ship24 单号查询
+  //   mail-query                                   → 17TRACK 单号查询
   //   mail-return                                  → 国际退信（独立一张表）
   // ============================================================
   const MAIL_ROUTES = {
@@ -885,6 +958,7 @@
     mailPageOpen = true;
     if (recordsPageOpen) hideRecordsPage();
     if (toolsPageOpen) hideToolsPage();
+    if (statisticsPageOpen) hideStatisticsPage();
     if (poSearchPageOpen) hidePOSearchPage();
     if (crawlerPageOpen) hideCrawlerPage();
     if (postalSearchPageOpen) hidePostalSearchPage();
@@ -895,10 +969,10 @@
     $('btn-add-record-fab').style.display = 'none';
 
     const label = mailLabel(pageKey);
-    mailPageTitle.textContent = `[ 邮件管理 · ${label} ]`;
+    mailPageTitle.textContent = `邮件管理 · ${label}`;
     mailPage.style.display = 'flex';
 
-    // 卡片互斥：国际退信 / 列表 / Ship24 查询 / 占位
+    // 卡片互斥：国际退信 / 列表 / 17TRACK 查询 / 占位
     mailListCard.style.display = 'none';
     mailReturnCard.style.display = 'none';
     mailTrackCard.style.display = 'none';
@@ -911,7 +985,7 @@
       mailReturnCard.style.display = '';
       if (typeof ReturnList !== 'undefined') ReturnList.show();
     } else if (route.kind === 'track') {
-      // 查询组件是 index.html 里的自定义元素 <ship24-tracking-widget>，脚本在 head 中加载
+      // 查询组件是 index.html 里的 17TRACK externalcall.js 组件（#YQNum / doTrack() / #YQContainer）
       mailTrackCard.style.display = '';
     } else {
       mailPlaceholderCard.style.display = '';
@@ -938,6 +1012,7 @@
 
   $('btn-refresh').addEventListener('click', () => {
     refreshAllViews();
+    refreshStatisticsIfVisible();
     if (recordsPageOpen) renderRecordsTable(recordsSearch.value);
   });
 
@@ -1017,6 +1092,7 @@
       else if (mailPageOpen) hideMailPage();
       else if (meterPageOpen) hideMeterPage();
       else if (galleryPageOpen) hideGalleryPage();
+      else if (statisticsPageOpen) hideStatisticsPage();
       else if (recordsPageOpen) hideRecordsPage();
     }
   });
@@ -1366,6 +1442,7 @@
   importBaseData().then(async (result) => {
     // 参考库已更新 → 排名表的「总计」（邮政官网网点数）跟着重算
     refreshStatsOnly();
+    refreshStatisticsIfVisible();
 
     const stats = PODatabase.getStats();
     const postCount = stats.provinces.reduce((s, p) => s + p.postCount, 0);

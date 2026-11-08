@@ -1171,15 +1171,6 @@ body:has(.modal-overlay.active) #app-content { overflow: hidden; }
   font-weight: 600;
   color: #333;
 }
-.tool-icon {
-  font-size: 12px;
-  font-weight: 700;
-  color: #00991A;
-  background: #e8f5e9;
-  padding: 2px 6px;
-  border-radius: 3px;
-  font-family: 'Consolas', 'Courier New', monospace;
-}
 .tool-card-body {
   padding: 16px;
 }
@@ -1605,8 +1596,13 @@ body:has(.modal-overlay.active) #app-content { overflow: hidden; }
 .mail-placeholder-title { font-size: 15px; font-weight: 600; color: #666; }
 .mail-placeholder-desc { font-size: 13px; color: #999; }
 
-/* 「查询」页：Ship24 组件是自定义元素，默认 display:inline，这里给个块级容器 */
-ship24-tracking-widget { display: block; }
+/* 「查询」页：17TRACK 的输入框 / 按钮沿用项目表单与主按钮样式 */
+#mail-track-card .tool-form-row { max-width: 560px; margin-bottom: 0; }
+#mail-track-card #YQNum { flex: 1 1 240px; width: auto; min-width: 0; height: 34px; }
+#mail-track-card .tool-btn-primary { flex: 0 0 auto; height: 34px; padding: 0 22px; }
+#mail-track-card #YQContainer { margin-top: 12px; }
+#mail-track-card #YQContainer:empty { margin-top: 0; }
+#mail-track-card #YQContainer iframe { display: block; border-radius: 6px; }
 
 /* ------------------------------------------------------------
    待发 / 在途 / 妥收：三模块共用的邮件表
@@ -2767,4 +2763,281 @@ ship24-tracking-widget { display: block; }
   .gallery-detail-info { width: auto; flex: 1; }
 }
 
+/* ============================================================
+   ===== 统计页（多图表数据看板） =====
+   ============================================================ */
+#statistics-page {
+  display: none;
+  flex-direction: column;
+  flex: 1 1 auto;
+  padding: 20px 24px;
+  min-height: calc(100vh - 100px);
+}
+#statistics-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+#statistics-header h2 {
+  font-size: 20px;
+  font-weight: 600;
+  color: #333;
+}
+.statistics-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.statistics-hint {
+  font-size: 12px;
+  color: #999;
+}
 
+/* 概览卡片 */
+.stat-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.stat-kpi {
+  --kpi-accent: #007A15;
+  min-width: 0;
+  padding: 14px 16px;
+  border-top: 3px solid var(--kpi-accent);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .08);
+}
+.stat-kpi:nth-child(2) { --kpi-accent: #1e88e5; }
+.stat-kpi:nth-child(3) { --kpi-accent: #00897b; }
+.stat-kpi:nth-child(4) { --kpi-accent: #3949ab; }
+.stat-kpi:nth-child(5) { --kpi-accent: #8e24aa; }
+.stat-kpi:nth-child(6) { --kpi-accent: #ef6c00; }
+.stat-kpi:nth-child(7) { --kpi-accent: #e53935; }
+.stat-kpi:nth-child(8) { --kpi-accent: #6d4c41; }
+.stat-kpi-label {
+  margin-bottom: 6px;
+  overflow: hidden;
+  color: #888;
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.stat-kpi-value {
+  overflow: hidden;
+  color: var(--kpi-accent);
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.15;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.stat-kpi-unit {
+  margin-left: 2px;
+  color: #999;
+  font-size: 14px;
+  font-weight: 600;
+}
+.stat-kpi-sub {
+  margin-top: 5px;
+  overflow: hidden;
+  color: #999;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 图表卡片 */
+.stat-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.stat-card {
+  min-width: 0;
+  padding: 14px 16px 8px;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .08);
+}
+.stat-card.stat-span-2 { grid-column: span 2; }
+.stat-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 24px;
+  margin-bottom: 4px;
+}
+.stat-card-head h3 {
+  color: #333;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.stat-card-note {
+  color: #999;
+  font-size: 11px;
+  text-align: right;
+}
+.stat-card-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.stat-card-tools .form-select {
+  width: auto;
+  height: 26px;
+  padding: 1px 6px;
+  font-size: 12px;
+}
+.stat-chart {
+  width: 100%;
+  height: 300px;
+}
+.stat-chart.tall { height: 360px; }
+.stat-chart.trend { height: 320px; }
+.stat-chart.calendar { height: 250px; }
+.stat-chart.meter { height: 320px; }
+
+@media (max-width: 1100px) {
+  .stat-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 900px) {
+  #statistics-page { padding: 16px; }
+  .stat-chart-grid { grid-template-columns: 1fr; }
+  .stat-card.stat-span-2 { grid-column: auto; }
+  .statistics-hint { display: none; }
+}
+@media (max-width: 480px) {
+  .stat-kpi-grid { grid-template-columns: 1fr; }
+  .stat-kpi-value { font-size: 23px; }
+  .stat-card-head { flex-direction: column; align-items: flex-start; gap: 2px; }
+  .stat-card-note { text-align: left; }
+  .stat-chart { height: 260px; }
+}
+
+/* ===== 统计页：上海市细化 ===== */
+.stat-shanghai {
+  margin-top: 24px;
+}
+.stat-section-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.stat-section-head h3 {
+  color: #333;
+  font-size: 16px;
+  font-weight: 600;
+}
+.stat-section-desc {
+  margin-top: 3px;
+  color: #999;
+  font-size: 12px;
+}
+.stat-sh-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.stat-sh-kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px 14px;
+  border-left: 3px solid #00991A;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .08);
+}
+.stat-sh-kpi:nth-child(2) { border-left-color: #42a5f5; }
+.stat-sh-kpi:nth-child(3) { border-left-color: #ab47bc; }
+.stat-sh-kpi:nth-child(4) { border-left-color: #ffa726; }
+.stat-sh-kpi-label {
+  color: #888;
+  font-size: 12px;
+}
+.stat-sh-kpi-value {
+  overflow: hidden;
+  color: #222;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.1;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.stat-table-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.stat-table-card {
+  min-width: 0;
+  padding: 14px 16px 8px;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .08);
+}
+.stat-table-card.stat-table-span-2 { grid-column: span 2; }
+.stat-table-wrap {
+  max-height: 380px;
+  overflow: auto;
+  border: 1px solid #f0f0f0;
+  border-radius: 6px;
+}
+.stat-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.stat-table th,
+.stat-table td {
+  padding: 7px 9px;
+  border-bottom: 1px solid #f2f2f2;
+  text-align: left;
+  white-space: nowrap;
+}
+.stat-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: #666;
+  font-weight: 600;
+  background: #fafafa;
+}
+.stat-table tbody tr:hover { background: #f7fbf7; }
+.stat-table tbody tr:last-child td { border-bottom: none; }
+.stat-table-empty {
+  padding: 20px !important;
+  color: #999;
+  text-align: center !important;
+}
+
+@media (max-width: 1100px) {
+  .stat-sh-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 900px) {
+  .stat-table-grid { grid-template-columns: 1fr; }
+  .stat-table-card.stat-table-span-2 { grid-column: auto; }
+  .stat-section-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+  .stat-table-wrap { max-height: 360px; }
+}
+@media (max-width: 480px) {
+  .stat-sh-kpi-grid { grid-template-columns: 1fr; }
+  .stat-sh-kpi-value { font-size: 20px; }
+}
