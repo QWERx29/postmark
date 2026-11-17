@@ -35,6 +35,7 @@ const { execFileSync } = require('child_process');
 
 const CrawlerEngine = require('./crawler-engine');
 const ImgExport = require('./img-export');
+const Backup = require('./backup');
 const Postal = require('./postal');
 const PostalBase = require('./postal/base-updater');
 const Uprins = require('./uprins');
@@ -52,7 +53,9 @@ const POST_ROUTES = [
   '/api/crawl/start', '/api/crawl/cancel',
   '/api/postal/crawl/start',
   '/api/postal/apply-base',
-  '/api/images/save', '/api/images/delete',
+  '/api/images/save', '/api/images/delete', '/api/images/migrate-legacy',
+  '/api/backup/snapshot', '/api/backup/create', '/api/backup/inspect',
+  '/api/backup/apply', '/api/backup/discard', '/api/backup/delete',
   '/api/tools/uprins',
 ];
 
@@ -66,9 +69,12 @@ const MIME = {
   '.js':   'application/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.csv':  'text/csv',
+  '.zip':  'application/zip',
   '.png':  'image/png',
   '.jpg':  'image/jpeg',
   '.jpeg': 'image/jpeg',
+  '.jfif': 'image/jpeg',
+  '.jpe':  'image/jpeg',
   '.webp': 'image/webp',
   '.bmp':  'image/bmp',
   '.svg':  'image/svg+xml; charset=utf-8',
@@ -201,18 +207,52 @@ function createPaths(opts) {
 
   /**
    * 图片保存目录（必须可写）。
-   * 默认落在产出目录下的 images/，与爬虫产出共用同一个可写位置；
-   * 用 POSTMARK_IMAGES_DIR 可以显式指到任意目录（例如 D:\ApplicationData\Images）。
-   * 具体解析、创建与存在性检查都交给 img-export.js，这里只把 outputDir 传下去并缓存结果。
+   * 默认落在**应用根目录下的 images/**（不再是 output/images/）：图片是用户的
+   * 长期数据，和爬虫产出（可随时重新抓取）分开放更好理解，也便于整目录备份。
+   *
+   * 查找顺序：POSTMARK_IMAGES_DIR → <imagesRoot>/images → <outputDir>/images
+   *   - 开发运行 / 浏览器模式：imagesRoot = 项目根；
+   *   - Electron 便携版 / 安装版：imagesRoot = exe 所在目录（用户能直接看到）；
+   *   - Tauri：产出目录由 POSTMARK_OUTPUT_DIR 指定为 <用户数据>/output，
+   *     imagesRoot 取其父目录，于是图片落在 <用户数据>/images。
+   * 后一个候选兜底「程序目录只读」，也兼容旧版把图片放在 output/images 的情况。
    */
+  function resolveImagesRoot() {
+    if (portableDir) return path.resolve(portableDir);
+    if (packagedExeDir) return path.resolve(packagedExeDir);
+    if (envOutputDir) {
+      const out = path.resolve(envOutputDir);
+      if (path.basename(out).toLowerCase() === 'output') return path.dirname(out);
+    }
+    return root;
+  }
+
   let imagesDirCache = '';
   function resolveImagesDir() {
     if (imagesDirCache) return imagesDirCache;
-    imagesDirCache = ImgExport.configure({ outputDir: resolveOutputDir() }).imagesDir;
+    const outputDir = resolveOutputDir();
+    imagesDirCache = ImgExport.configure({
+      rootDir: resolveImagesRoot(),
+      outputDir,
+      legacyDir: path.join(outputDir, 'images'),
+    }).imagesDir;
     return imagesDirCache;
   }
 
-  return { root, resolveBaseDir, resolveOutputDir, resolveImagesDir, compareExeCandidates };
+  /** 旧版图片目录（output/images）；与当前目录相同时为空串 */
+  function resolveLegacyImagesDir() {
+    resolveImagesDir();
+    return ImgExport.getLegacyDir();
+  }
+
+  return {
+    root,
+    resolveBaseDir,
+    resolveOutputDir,
+    resolveImagesDir,
+    resolveLegacyImagesDir,
+    compareExeCandidates,
+  };
 }
 
 // ---- 静态文件响应 ----
@@ -232,6 +272,30 @@ function sendFile(res, filePath) {
       'Cache-Control': 'no-cache',
     });
     res.end(data);
+  });
+}
+
+/**
+ * 流式发送文件（用于 output/ 下的备份包与报告）。
+ * 备份 zip 可能上百 MB，sendFile 那种「整文件读进内存」的写法会白白占一份内存。
+ */
+function sendFileStream(res, filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  fs.stat(filePath, (err, st) => {
+    if (err || !st.isFile()) {
+      res.writeHead(404);
+      return res.end('Not Found');
+    }
+    res.writeHead(200, {
+      'Content-Type': MIME[ext] || 'application/octet-stream',
+      'Content-Length': st.size,
+      'Cache-Control': 'no-cache',
+    });
+    const stream = fs.createReadStream(filePath);
+    stream.on('error', () => {
+      try { res.destroy(); } catch (e) { /* ignore */ }
+    });
+    stream.pipe(res);
   });
 }
 
@@ -276,6 +340,55 @@ function sendJson(res, status, obj) {
     'Cache-Control': 'no-store',
   });
   res.end(body);
+}
+
+/**
+ * 把请求体原样流式落盘（备份包上传用）。
+ * 备份 zip 可能上百 MB，不能走 readJsonBody 那种「全读进内存」的路径；
+ * 同时仍然要有一个上限，避免异常客户端把磁盘写满。
+ *
+ * @param {http.IncomingMessage} req
+ * @param {string} destPath
+ * @param {number} maxBytes
+ * @returns {Promise<{size:number}>}
+ */
+function receiveToFile(req, destPath, maxBytes) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    let settled = false;
+    let ws = null;
+
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      try { req.unpipe(); } catch (e) { /* ignore */ }
+      try { req.destroy(); } catch (e) { /* ignore */ }
+      try { if (ws) ws.destroy(); } catch (e) { /* ignore */ }
+      try { if (fs.existsSync(destPath)) fs.unlinkSync(destPath); } catch (e) { /* ignore */ }
+      reject(err);
+    };
+
+    ws = fs.createWriteStream(destPath);
+
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        const err = new Error(`备份包过大（上限 ${Math.round(maxBytes / 1048576)} MB）`);
+        err.statusCode = 413;
+        fail(err);
+      }
+    });
+    req.on('aborted', () => fail(Object.assign(new Error('上传被中断'), { statusCode: 400 })));
+    req.on('error', (e) => fail(e));
+    ws.on('error', (e) => fail(e));
+    ws.on('finish', () => {
+      if (settled) return;
+      settled = true;
+      resolve({ size });
+    });
+
+    req.pipe(ws);
+  });
 }
 
 /** 列出目录下的 CSV（name/size/mtime），目录不可读时返回空数组 */
@@ -528,7 +641,7 @@ function getPostalStatus(jobId, cursor) {
  * 也方便将来单独测路由。
  */
 function createRequestHandler(paths) {
-  const { root, resolveBaseDir, resolveOutputDir, resolveImagesDir } = paths;
+  const { root, resolveBaseDir, resolveOutputDir, resolveImagesDir, resolveLegacyImagesDir } = paths;
 
   return async function handleRequest(req, res) {
     // 解析路径 (去掉 query string + URL 解码)
@@ -659,6 +772,82 @@ function createRequestHandler(paths) {
       }
     }
 
+    // ---------- 备份 / 恢复 / 自动快照 ----------
+    // 记录在 localStorage（渲染层），图片在磁盘（服务端）。整包备份必须由服务端
+    // 把两者合到一个 zip 里；恢复时图片也由服务端落盘，前端只负责写回四张表。
+    if (urlPath.startsWith('/api/backup/')) {
+      try {
+        // 备份文件列表（output/backup 下的 .zip 与 .json）
+        if (urlPath === '/api/backup/files') {
+          return sendJson(res, 200, Backup.listBackups());
+        }
+
+        // 自动快照：只写四表 JSON，体积小、可以每次启动都跑
+        if (urlPath === '/api/backup/snapshot') {
+          const body = await readJsonBody(req, 128 * 1024 * 1024);
+          const tables = Backup.normalizeTables(body.tables);
+          const counts = Backup.countsOf(tables);
+          if (counts.records + counts.meters + counts.mails + counts.returns === 0) {
+            return sendJson(res, 400, { error: '当前没有可保存的数据' });
+          }
+          const result = Backup.writeSnapshot(tables, {
+            reason: body.reason,
+            keep: body.keep,
+          });
+          return sendJson(res, 200, { ok: true, ...result });
+        }
+
+        // 完整备份包：四表 + 图片（当前目录 + 旧目录）
+        if (urlPath === '/api/backup/create') {
+          const body = await readJsonBody(req, 128 * 1024 * 1024);
+          const result = Backup.createPackage(body.tables, {
+            base: body.base,
+            note: body.note,
+          });
+          return sendJson(res, 200, { ok: true, ...result });
+        }
+
+        // 上传备份包 → 解到暂存目录，返回清单供用户确认（不直接改正式数据）
+        if (urlPath === '/api/backup/inspect') {
+          const token = Backup.newToken();
+          const zipPath = Backup.stagingZipPath(token);
+          const info = await receiveToFile(req, zipPath, Backup.maxUploadBytes());
+          if (!info.size) {
+            try { fs.unlinkSync(zipPath); } catch (e) { /* ignore */ }
+            return sendJson(res, 400, { error: '备份包为空' });
+          }
+          const result = Backup.inspect(zipPath, token);
+          return sendJson(res, 200, result);
+        }
+
+        // 确认恢复：把暂存图片搬进正式图片目录
+        if (urlPath === '/api/backup/apply') {
+          const body = await readJsonBody(req);
+          const result = Backup.applyRestore(body.token, { images: body.images });
+          return sendJson(res, 200, { ok: true, ...result });
+        }
+
+        // 取消恢复：清掉暂存
+        if (urlPath === '/api/backup/discard') {
+          const body = await readJsonBody(req);
+          return sendJson(res, 200, { ok: true, ...Backup.discard(body.token) });
+        }
+
+        // 删除某个备份文件
+        if (urlPath === '/api/backup/delete') {
+          const body = await readJsonBody(req);
+          return sendJson(res, 200, { ok: true, ...Backup.deleteFile(body.name) });
+        }
+
+        res.writeHead(404);
+        return res.end('Not Found');
+      } catch (e) {
+        const status = e.statusCode || 500;
+        if (status >= 500) console.error('[Postmark] 备份接口异常:', e);
+        return sendJson(res, status, { error: e.message || String(e) });
+      }
+    }
+
     // ---------- 图片接口（录入日戳 → 上传图片） ----------
     // 渲染层负责解码/裁剪/旋转/增强并编码，服务端只负责「校验 + 落到正确的位置」。
     if (urlPath.startsWith('/api/images/')) {
@@ -669,10 +858,29 @@ function createRequestHandler(paths) {
         if (urlPath === '/api/images/config') {
           return sendJson(res, 200, {
             imagesDir: info.imagesDir,
+            legacyDir: info.legacyDir,
+            legacyExists: info.legacyExists,
             custom: info.custom,
             maxFileBytes: info.maxFileBytes,
             unfiledDir: info.unfiledDir,
           });
+        }
+
+        // 全量图片列表（图片管理 / 孤儿治理）：前端与记录里的 photos 比对
+        if (urlPath === '/api/images/all') {
+          const limit = Number(query.get('limit')) || 0;
+          return sendJson(res, 200, {
+            imagesDir: info.imagesDir,
+            legacyDir: info.legacyDir,
+            files: ImgExport.listAll({ limit }),
+          });
+        }
+
+        // 把旧目录 output/images 的图片迁移到当前目录（保留相对路径）
+        if (urlPath === '/api/images/migrate-legacy') {
+          await readJsonBody(req);            // 请求体为空对象，读掉以免连接复用出问题
+          const result = ImgExport.migrateLegacy({});
+          return sendJson(res, 200, { ok: true, ...result });
         }
 
         // 重名检测: ?name=&subdir=
@@ -718,9 +926,14 @@ function createRequestHandler(paths) {
           });
         }
 
-        // 删除: body { fileName, subdir }
+        // 删除: body { fileName, subdir } 或 { relPath, legacy }
+        // 图片管理页按相对路径删（可能是旧目录里的文件），录入表单仍用 fileName + subdir。
         if (urlPath === '/api/images/delete') {
           const body = await readJsonBody(req);
+          if (body && body.relPath) {
+            const result = ImgExport.removePath(body.relPath, { legacy: body.legacy === true });
+            return sendJson(res, 200, { ok: true, deleted: result.deleted, relPath: result.relPath });
+          }
           const result = ImgExport.remove(body.fileName, body.subdir);
           return sendJson(res, 200, { ok: true, deleted: result.deleted, relPath: result.relPath });
         }
@@ -751,10 +964,12 @@ function createRequestHandler(paths) {
         res.writeHead(403);
         return res.end('Forbidden');
       }
-      return sendFile(res, target);
+      return sendFileStream(res, target);
     }
 
     // 已保存图片: /images/<子目录>/<文件名> 映射到解析后的图片目录
+    // 升级后图片默认在 <root>/images；旧版留在 output/images 的文件在这里回退读取，
+    // 记录里的相对路径无需迁移就能继续显示（迁移入口在「数据安全 → 图片管理」）。
     if (urlPath.startsWith('/images/')) {
       const imgDir = path.resolve(resolveImagesDir());
       const target = path.resolve(imgDir, urlPath.slice('/images/'.length));
@@ -762,6 +977,19 @@ function createRequestHandler(paths) {
         res.writeHead(403);
         return res.end('Forbidden');
       }
+
+      if (!fs.existsSync(target)) {
+        const legacyDir = resolveLegacyImagesDir();
+        if (legacyDir) {
+          const legacyRoot = path.resolve(legacyDir);
+          const legacyTarget = path.resolve(legacyRoot, urlPath.slice('/images/'.length));
+          if ((legacyTarget === legacyRoot || legacyTarget.startsWith(legacyRoot + path.sep))
+              && fs.existsSync(legacyTarget)) {
+            return sendFile(res, legacyTarget);
+          }
+        }
+      }
+
       return sendFile(res, target);
     }
 
@@ -820,7 +1048,18 @@ function createServer(opts) {
   });
 
   // 图片目录配置（必须在任何 /api/images/* 被调用前注入）
-  paths.resolveImagesDir();
+  const imagesDir = paths.resolveImagesDir();
+
+  // 备份目录配置（必须在任何 /api/backup/* 被调用前注入）
+  Backup.configure({
+    rootDir: paths.root,
+    outputDir: paths.resolveOutputDir(),
+    imagesDir,
+    legacyImagesDir: paths.resolveLegacyImagesDir(),
+    keep: Number(process.env.POSTMARK_BACKUP_KEEP) || undefined,
+  });
+  // 上次异常退出可能留下半截暂存目录：启动时清一遍
+  try { Backup.pruneStaging(); } catch (e) { /* 清理失败不影响启动 */ }
 
   const server = http.createServer(createRequestHandler(paths));
   server.__postmarkPaths = paths;              // 供测试脚本检查解析结果

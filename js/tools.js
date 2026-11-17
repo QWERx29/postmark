@@ -120,6 +120,52 @@
     'R': '国际挂号信刷',
   };
 
+  /**
+   * 校验 13 位信函条码（工具页与邮件录入共用同一套算法）。
+   * 只做校验与解释，不抛错；调用方决定「提示」还是「阻断」。
+   *
+   * @param {string} raw 扫描 / 手输的条码
+   * @returns {{ok:boolean, empty?:boolean, code:string, message:string,
+   *            typeDesc?:string, region?:string}}
+   */
+  function validateLetterBarcode(raw) {
+    const code = String(raw == null ? '' : raw).replace(/\s+/g, '').toUpperCase();
+    if (!code) return { ok: false, empty: true, code, message: '' };
+    if (code.length !== 13) {
+      return { ok: false, code, message: `应为 13 位，当前 ${code.length} 位` };
+    }
+
+    const serial = code.slice(2, 10);
+    if (!/^\d{8}$/.test(serial)) {
+      return { ok: false, code, message: '第 3–10 位序列号必须为 8 位数字' };
+    }
+    if (!/^\d$/.test(code[10])) {
+      return { ok: false, code, message: '第 11 位校验码必须为数字' };
+    }
+
+    const expected = calcCheckDigit(serial);
+    const actual = parseInt(code[10], 10);
+    if (expected !== actual) {
+      return { ok: false, code, message: `校验码不匹配（应为 ${expected}，当前 ${actual}）` };
+    }
+
+    const typeDesc = LETTER_TYPE_MAP[code[0]] || '未知信函种类';
+    let region = code.slice(11, 13);
+    if (code[0] === 'X' || code[0] === 'S') {
+      region = /^\d{2}$/.test(region) ? (lookupProvince(region) || region) : region;
+    } else if (code[0] === 'R') {
+      region = /^[A-Z]{2}$/.test(region) ? (COUNTRY_MAP[region] || region) : region;
+    }
+
+    return {
+      ok: true,
+      code,
+      message: `校验通过 · ${typeDesc} · ${region}`,
+      typeDesc,
+      region,
+    };
+  }
+
   function initBarcodeTool() {
     // ---- 校验 ----
     const input = $('tool-bc-input');
@@ -785,9 +831,10 @@
         if (first.institutionCode) bits.push('机构号 ' + first.institutionCode);
         const date = fmtCancelDateText(first.cancelDate);
         if (date) bits.push('盖销 ' + date);
-        if (Array.isArray(first.stampNumbers) && first.stampNumbers.length) {
-          bits.push('戳号 ' + first.stampNumbers.join(', '));
-        }
+        const stampsText = (typeof RecordStore !== 'undefined' && typeof RecordStore.formatStamps === 'function')
+          ? RecordStore.formatStamps(first, '、')
+          : '';
+        if (stampsText) bits.push('日戳 ' + stampsText);
         const more = collected.length > 1 ? `（共 ${collected.length} 条收集记录）` : '';
         rows.push(row('收集记录', (bits.join(' · ') || '已收集') + more));
       } else {
@@ -1229,7 +1276,7 @@
     initCopyButtons();
   }
 
-  // 对外接口（app.js / postal-page.js 使用）
+  // 对外接口（app.js / postal-page.js / mail-list.js 使用）
   window.Tools = {
     refreshPOSearch: () => refreshPOSearch(),
     refreshRandomPO: () => refreshRandomPO(),
@@ -1237,6 +1284,7 @@
     openPODetail: (rec) => openPODetail(rec),
     isCollected: (rec) => isCollected(rec),
     findCollectedRecords: (rec) => findCollectedRecords(rec),
+    validateLetterBarcode: (raw) => validateLetterBarcode(raw),
   };
 
   // DOM 就绪后初始化

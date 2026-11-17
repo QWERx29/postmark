@@ -24,19 +24,28 @@
  *
  * 目录结构
  * --------
- *   output/images/                 ← 默认根目录（可用 POSTMARK_IMAGES_DIR 覆盖）
+ *   images/                        ← 默认根目录（项目根下的 images/，可用 POSTMARK_IMAGES_DIR 覆盖）
  *   ├── <记录ID>/                  ← 同一条日戳记录的图片
  *   │   ├── 10000123_2026093015_中南海邮政支局_01.jpg
  *   │   └── 10000123_2026093015_中南海邮政支局_02.jpg
  *   └── _unfiled/                  ← 尚未保存记录时上传的图片
  *
+ * 旧目录兼容
+ * ----------
+ *   1.1 及更早版本把图片放在 output/images/。升级后默认目录变成 <项目根>/images/，
+ *   旧文件仍会被读取（exists / list / /images/* 都有回退），并可在「数据安全 →
+ *   图片管理」里一键迁移到新目录。备份包同时包含两个目录的图片。
+ *
  * 用法
  * ----
- *   const out = ImgExport.configure({ imagesDir });
+ *   const out = ImgExport.configure({ rootDir, outputDir, legacyDir });
  *   ImgExport.exists('10000123_2026093015_中南海邮政支局_01.jpg', recId);
  *   ImgExport.save({ dataUrl, fileName, subdir, conflict: 'error'|'overwrite'|'rename' });
  *   ImgExport.list({ subdir });
+ *   ImgExport.listAll();                 // 递归全量（图片管理 / 孤儿治理）
  *   ImgExport.remove('xxx.jpg', recId);
+ *   ImgExport.removePath('k3f9a2/xxx.jpg', { legacy: false });
+ *   ImgExport.migrateLegacy({ overwrite: false });
  */
 
 'use strict';
@@ -65,6 +74,8 @@ const UNFILED_DIR = ImgNaming.UNFILED_DIR;
 const SIGNATURES = {
   '.jpg': (b) => b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF,
   '.jpeg': (b) => b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF,
+  '.jfif': (b) => b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF,
+  '.jpe': (b) => b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF,
   '.png': (b) => b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47,
   '.webp': (b) => b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP',
   '.bmp': (b) => b[0] === 0x42 && b[1] === 0x4D,
@@ -78,18 +89,20 @@ const MIME_EXT = ImgNaming.MIME_EXT;
 // ============================================================
 
 let _imagesDir = '';
+let _legacyDir = '';        // 旧版目录（output/images），只读回退 + 可迁移
 let _customDir = false;      // 是否由环境变量显式指定（用于前端提示）
 
 /**
  * 解析并（尝试）创建图片根目录。
- * 查找顺序：环境变量 POSTMARK_IMAGES_DIR → <outputDir>/images
- * @param {{outputDir:string}} opts
+ * 查找顺序：环境变量 POSTMARK_IMAGES_DIR → <rootDir>/images → <outputDir>/images
+ * @param {{rootDir?:string, outputDir?:string}} opts
  * @returns {string} 最终使用的目录（可能是「创建失败」的候选目录）
  */
 function resolveImagesDir(opts) {
   const envDir = process.env.POSTMARK_IMAGES_DIR || '';
   const candidates = [];
   if (envDir) candidates.push(path.resolve(envDir));
+  if (opts && opts.rootDir) candidates.push(path.join(path.resolve(opts.rootDir), 'images'));
   if (opts && opts.outputDir) candidates.push(path.join(opts.outputDir, 'images'));
 
   for (const dir of candidates) {
@@ -101,22 +114,28 @@ function resolveImagesDir(opts) {
       // 不可创建或不可写，继续下一个候选
     }
   }
-  return candidates[candidates.length - 1] || path.join(process.cwd(), 'output', 'images');
+  return candidates[candidates.length - 1] || path.join(process.cwd(), 'images');
 }
 
 /**
  * 注入目录配置。必须在任何图片接口被调用前执行一次。
- * @param {{outputDir?:string, imagesDir?:string}} opts
+ * @param {{rootDir?:string, outputDir?:string, imagesDir?:string, legacyDir?:string}} opts
  */
 function configure(opts) {
   const o = opts || {};
   const envDir = process.env.POSTMARK_IMAGES_DIR || '';
   const imagesDir = o.imagesDir
     ? path.resolve(o.imagesDir)
-    : resolveImagesDir({ outputDir: o.outputDir });
+    : resolveImagesDir({ rootDir: o.rootDir, outputDir: o.outputDir });
 
   _imagesDir = imagesDir;
   _customDir = Boolean(envDir || o.imagesDir);
+
+  // 旧目录只在「确实不是当前目录」时才启用，否则会把同一个目录读两遍
+  const legacy = o.legacyDir
+    ? path.resolve(o.legacyDir)
+    : (o.outputDir ? path.join(path.resolve(o.outputDir), 'images') : '');
+  _legacyDir = legacy && path.resolve(legacy) !== path.resolve(_imagesDir) ? legacy : '';
 
   try {
     fs.mkdirSync(_imagesDir, { recursive: true });
@@ -124,7 +143,7 @@ function configure(opts) {
     // 创建失败不抛：写盘时会给出明确错误，前端能显示「请选择其他目录」
   }
 
-  return { imagesDir: _imagesDir, custom: _customDir };
+  return { imagesDir: _imagesDir, legacyDir: _legacyDir, custom: _customDir };
 }
 
 function getImagesDir() {
@@ -132,9 +151,16 @@ function getImagesDir() {
   return _imagesDir;
 }
 
+/** 旧版图片目录（output/images）；没有或与当前目录相同时返回 '' */
+function getLegacyDir() {
+  return _legacyDir;
+}
+
 function getInfo() {
   return {
     imagesDir: getImagesDir(),
+    legacyDir: _legacyDir,
+    legacyExists: Boolean(_legacyDir && fs.existsSync(_legacyDir)),
     custom: _customDir,
     maxFileBytes: MAX_FILE_BYTES,
     maxUploadBytes: MAX_UPLOAD_BYTES,
@@ -199,63 +225,184 @@ function toRelPath(fileName, subdir) {
   return seg ? `${seg}/${base}` : base;
 }
 
+/**
+ * 把「相对路径」安全地拼到某个根目录下。
+ * 只接受 / 分隔的相对路径；`..`、绝对路径一律拒绝。
+ * @throws {Error} 路径非法
+ */
+function safeJoin(rootDir, relPath) {
+  const rel = String(relPath == null ? '' : relPath).replace(/\\/g, '/');
+  const segs = rel.split('/').filter(Boolean);
+  if (segs.some((s) => s === '.' || s === '..')) {
+    const err = new Error('图片路径不合法');
+    err.statusCode = 400;
+    throw err;
+  }
+  const root = path.resolve(rootDir);
+  const target = path.resolve(root, ...segs);
+  if (target !== root && !target.startsWith(root + path.sep)) {
+    const err = new Error('目标路径越界');
+    err.statusCode = 403;
+    throw err;
+  }
+  return target;
+}
+
 // ============================================================
 // 读
 // ============================================================
 
 /**
  * 目标文件是否已存在（设计稿第 17 节：不默认覆盖，先检测冲突）。
- * @returns {{exists:boolean, size:number, mtime:number, relPath:string, absPath:string}}
+ * 当前目录没有时会去旧目录（output/images）里找，保证升级后旧图片仍能显示。
+ * @returns {{exists:boolean, size:number, mtime:number, relPath:string, absPath:string, legacy:boolean}}
  */
 function exists(fileName, subdir) {
   const { target, fileName: base } = resolvePath(fileName, subdir);
   const relPath = toRelPath(base, subdir);
+
+  const hit = statFile(target);
+  if (hit) return { ...hit, relPath, absPath: target, legacy: false };
+
+  if (_legacyDir) {
+    const legacyTarget = safeJoin(_legacyDir, relPath);
+    const legacyHit = statFile(legacyTarget);
+    if (legacyHit) return { ...legacyHit, relPath, absPath: legacyTarget, legacy: true };
+  }
+
+  return { exists: false, size: 0, mtime: 0, relPath, absPath: target, legacy: false };
+}
+
+/** 读一个文件的 size/mtime；不存在或不是普通文件时返回 null */
+function statFile(target) {
   try {
     const st = fs.statSync(target);
-    if (!st.isFile()) return { exists: false, size: 0, mtime: 0, relPath, absPath: target };
-    return { exists: true, size: st.size, mtime: st.mtimeMs, relPath, absPath: target };
+    if (!st.isFile()) return null;
+    return { exists: true, size: st.size, mtime: st.mtimeMs };
   } catch (e) {
-    return { exists: false, size: 0, mtime: 0, relPath, absPath: target };
+    return null;
   }
 }
 
 /**
- * 列出目录下已保存的图片。
+ * 列出目录下已保存的图片（当前目录 + 旧目录，按相对路径去重）。
  * @param {{subdir?:string, limit?:number}} [opts]
- * @returns {Array<{name:string, relPath:string, size:number, mtime:number}>}
+ * @returns {Array<{name:string, relPath:string, size:number, mtime:number, source:'current'|'legacy'}>}
  */
 function list(opts) {
   const o = opts || {};
-  const root = path.resolve(getImagesDir());
   const seg = o.subdir ? sanitizeSegment(o.subdir) : '';
-  const dir = seg ? path.join(root, seg) : root;
   const limit = Number.isInteger(o.limit) && o.limit > 0 ? o.limit : 500;
 
-  let names;
-  try {
-    names = fs.readdirSync(dir);
-  } catch (e) {
-    return [];                       // 目录不存在 = 没有图片，不算错误
-  }
-
   const out = [];
-  for (const name of names) {
-    if (!SIGNATURES[path.extname(name).toLowerCase()]) continue;
+  const seen = new Set();
+
+  const collect = (rootDir, source) => {
+    if (!rootDir) return;
+    const dir = seg ? path.join(rootDir, seg) : rootDir;
+    let names;
     try {
-      const st = fs.statSync(path.join(dir, name));
-      if (!st.isFile()) continue;
-      out.push({
-        name,
-        relPath: toRelPath(name, seg),
-        size: st.size,
-        mtime: st.mtimeMs,
-      });
+      names = fs.readdirSync(dir);
     } catch (e) {
-      // 遍历期间文件被删掉，跳过
+      return;                       // 目录不存在 = 没有图片，不算错误
     }
-  }
+    for (const name of names) {
+      if (!SIGNATURES[path.extname(name).toLowerCase()]) continue;
+      const relPath = toRelPath(name, seg);
+      if (seen.has(relPath)) continue;
+      let st;
+      try {
+        st = fs.statSync(path.join(dir, name));
+        if (!st.isFile()) continue;
+      } catch (e) {
+        continue;                   // 遍历期间文件被删掉，跳过
+      }
+      seen.add(relPath);
+      out.push({ name, relPath, size: st.size, mtime: st.mtimeMs, source });
+    }
+  };
+
+  collect(getImagesDir(), 'current');
+  collect(_legacyDir, 'legacy');
+
   out.sort((a, b) => b.mtime - a.mtime);
   return out.slice(0, limit);
+}
+
+/**
+ * 递归列出全部图片（当前目录 + 旧目录），供「图片管理 / 孤儿治理」使用。
+ * 前端拿它和记录里的 photos 比对，找出没人引用的文件。
+ *
+ * @param {{limit?:number}} [opts] limit=0 表示不限制
+ * @returns {Array<{relPath:string, name:string, size:number, mtime:number,
+ *                  source:'current'|'legacy', subdir:string}>}
+ */
+function listAll(opts) {
+  const o = opts || {};
+  const limit = Number.isInteger(o.limit) && o.limit > 0 ? o.limit : 0;
+
+  const out = [];
+  const seen = new Set();
+
+  const walk = (rootDir, source) => {
+    if (!rootDir) return false;
+    let rootStat;
+    try {
+      rootStat = fs.statSync(rootDir);
+    } catch (e) {
+      return false;
+    }
+    if (!rootStat.isDirectory()) return false;
+
+    const stack = [''];
+    while (stack.length) {
+      const rel = stack.pop();
+      const dir = rel ? path.join(rootDir, rel) : rootDir;
+      let entries;
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch (e) {
+        continue;
+      }
+      for (const ent of entries) {
+        const name = ent.name;
+        if (!name || name.startsWith('.')) continue;
+        const childRel = rel ? `${rel}/${name}` : name;
+        if (childRel.split('/').length > 8) continue;      // 目录层级防护
+        if (ent.isDirectory()) {
+          stack.push(childRel);
+          continue;
+        }
+        if (!ent.isFile()) continue;
+        if (!SIGNATURES[path.extname(name).toLowerCase()]) continue;
+        if (seen.has(childRel)) continue;
+        let st;
+        try {
+          st = fs.statSync(path.join(rootDir, childRel));
+        } catch (e) {
+          continue;
+        }
+        seen.add(childRel);
+        const slash = childRel.lastIndexOf('/');
+        out.push({
+          relPath: childRel,
+          name,
+          size: st.size,
+          mtime: st.mtimeMs,
+          source,
+          subdir: slash >= 0 ? childRel.slice(0, slash) : '',
+        });
+        if (limit && out.length >= limit) return true;
+      }
+    }
+    return false;
+  };
+
+  walk(getImagesDir(), 'current');
+  walk(_legacyDir, 'legacy');
+
+  out.sort((a, b) => b.mtime - a.mtime);
+  return out;
 }
 
 // ============================================================
@@ -469,6 +616,101 @@ function remove(fileName, subdir) {
 }
 
 /**
+ * 按相对路径删除图片（支持子目录，如 "k3f9a2/xxx.jpg"）。
+ * 与 remove() 的区别：remove 只接受「子目录 + 文件名」，这里给图片管理页用，
+ * 可以直接删旧目录（output/images）里的文件。
+ *
+ * @param {string} relPath
+ * @param {{legacy?:boolean}} [opts] legacy=true 时删旧目录里的同名文件
+ * @returns {{deleted:boolean, relPath:string, legacy:boolean}}
+ */
+function removePath(relPath, opts) {
+  const o = opts || {};
+  const root = o.legacy ? _legacyDir : getImagesDir();
+  if (!root) {
+    const err = new Error('没有可用的旧图片目录');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const rel = String(relPath == null ? '' : relPath).replace(/\\/g, '/').replace(/^\/+/, '');
+  const segs = rel.split('/').filter(Boolean);
+  if (segs.length === 0 || segs.some((s) => s === '.' || s === '..')) {
+    const err = new Error('图片路径不合法');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const target = safeJoin(root, segs.join('/'));
+  const normalized = segs.join('/');
+  try {
+    fs.unlinkSync(target);
+    return { deleted: true, relPath: normalized, legacy: Boolean(o.legacy) };
+  } catch (e) {
+    if (e.code === 'ENOENT') return { deleted: false, relPath: normalized, legacy: Boolean(o.legacy) };
+    if (e.code === 'EACCES' || e.code === 'EPERM') {
+      const err = new Error('当前目录没有写入权限，无法删除');
+      err.statusCode = 403;
+      throw err;
+    }
+    throw e;
+  }
+}
+
+/**
+ * 把旧目录（output/images）里的图片搬到当前目录，保留相对路径。
+ * 记录里的 photos 存的就是相对路径，搬家后无需改记录。
+ *
+ * @param {{overwrite?:boolean}} [opts] overwrite=true 时覆盖新目录里的同名文件
+ * @returns {{moved:number, skipped:number, failed:number, bytes:number,
+ *            target:string, legacyDir:string, empty:boolean}}
+ */
+function migrateLegacy(opts) {
+  const o = opts || {};
+  const target = getImagesDir();
+
+  if (!_legacyDir) {
+    return { moved: 0, skipped: 0, failed: 0, bytes: 0, target, legacyDir: '', empty: true };
+  }
+
+  const files = listAll({}).filter((f) => f.source === 'legacy');
+  if (files.length === 0) {
+    return { moved: 0, skipped: 0, failed: 0, bytes: 0, target, legacyDir: _legacyDir, empty: true };
+  }
+
+  let moved = 0;
+  let skipped = 0;
+  let failed = 0;
+  let bytes = 0;
+
+  for (const f of files) {
+    const src = safeJoin(_legacyDir, f.relPath);
+    const dest = safeJoin(target, f.relPath);
+
+    if (fs.existsSync(dest) && !o.overwrite) {
+      skipped++;
+      continue;
+    }
+
+    try {
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      try {
+        fs.renameSync(src, dest);
+      } catch (e) {
+        fs.copyFileSync(src, dest);
+        fs.unlinkSync(src);
+      }
+      moved++;
+      bytes += f.size;
+    } catch (e) {
+      failed++;
+    }
+  }
+
+  return { moved, skipped, failed, bytes, target, legacyDir: _legacyDir, empty: false };
+}
+
+/**
  * 模块导出。
  *
  * 有意**不导出** read()：图片预览由 server.js 直接用 sendFile 走静态文件路径，
@@ -483,11 +725,16 @@ module.exports = {
   configure,
   getInfo,
   getImagesDir,
+  getLegacyDir,
   sanitizeSegment,
   sanitizeFileName,
   toRelPath,
+  safeJoin,
   exists,
   list,
+  listAll,
   save,
   remove,
+  removePath,
+  migrateLegacy,
 };

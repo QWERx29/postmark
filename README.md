@@ -16,11 +16,11 @@
 
 | 功能 | 说明 |
 | --- | --- |
-| 日戳录入 | 省 / 市 / 县三级联动表单，机构号自动生成，支持戳号增删、邮资机与风景日戳条件字段 |
+| 日戳录入 | 省 / 市 / 县三级联动表单，机构号自动生成，支持戳号增删并按戳号逐把记录材质（戳号留空记为「无戳号」，同一邮局可同时录入带号与无号日戳）、邮资机与风景日戳条件字段；「邮局类型/状态」可选营业 / 投递部 / 已撤销 / 主题邮局 / 临时邮局，选「投递部」即用于录入投递日戳；日期选择支持月历 / 年历切换 |
 | 邮资机戳 | 独立于日戳记录的一张表（侧边栏「数据管理 · 邮资机戳」），列示型号 / 编号 / 上环 / 下环 / 表头 / 打印日期 / 打印网点 / 备注；打印网点按 省 → 市 → 县 选定后再填名称，候选建议与「录入日戳」同源（本机日戳记录 + `base` 参考库）；列表可按要素升降序排序。首次启动自动把日戳记录里已填的邮资机信息移植过来，之后两边互不影响，可手动「从日戳记录移植」补拉 |
 | 地图可视化 | ECharts 中国地图着色，支持省 → 市下钻，GeoJSON 全部本地加载 |
 | 统计面板 | 收集总量与省 / 地 / 县覆盖数、省份排名表、采集日历热力图。排名表的「总计」不是写死的估算值：大陆省份取自 `base` 参考库里该省的邮政官网（POST）网点数，港澳台取自 `PostalStore`（香港 / 澳门 / 台湾邮局 + 代办所）；参考库导入、对比刷新或港澳台抓取完成后自动重算。右下角「数据更新」显示参考库最后一次刷新的日期 |
-| 统计页 | 侧边栏「统计」：把本机日戳、邮资机戳、邮件、国际退信与邮戳图片汇总成看板。顶部 8 张概览卡片，下方 11 个 ECharts 图表：省份收集排行、采集趋势、采集日历热力图、邮局状态构成、材质分布、戳号使用频次、日戳采集时段、全国网点覆盖率仪表盘、邮件状态、国际退信进度环形图（发出 / 到达 / 返回 / 收到）、邮资机型号 Top 10。页面下半部分另设「上海市细化」：区县收集情况、戳号分布、月度采集、网点明细四张表。进入页面、数据变化或点「刷新」时重新汇总 |
+| 统计页 | 侧边栏「统计」：把本机日戳、邮资机戳、邮件、国际退信与邮戳图片汇总成看板。顶部 8 张概览卡片常驻（其中「国际退信」卡片的副标题按 寄达 / 返回 / 收到 三段计件：某件填了该时间就计入该段，所以各段之和可能大于总数；下方环形图按「最远已填节点」分段，一件只落一段），下方按「总览 / 日戳与机戳 / 邮件与退信 / 分省」四个维度分页：总览含省份收集排行、采集趋势、采集日历热力图；日戳与机戳含邮局类型/状态构成、材质分布（按日戳把数）、戳号使用频次、日戳采集时段、全国网点覆盖率仪表盘、邮资机型号 Top 10；邮件与退信含邮件状态、国际退信进度环形图（发出 / 到达 / 返回 / 收到）；分省页下拉选择省份后，用 4 张省级图表（地区收集排行、月度采集趋势、邮局类型/状态构成、戳号 Top 10）和 4 张明细表（地区收集、戳号分布、月度采集、网点明细）细化展示；直辖市及港澳按区县展开，其余省份按地市展开。进入页面、数据变化或点「刷新」时重新汇总；切换分页只切换视图，切换省份重绘分省内容 |
 | 工具箱 | 首页按工具列出入口，**每页一个工具**：机构号生成器、信函条码校验与生成、条码展示、随机网点、机戳查询 |
 | 机戳查询 | 通过二维码链接解析机戳信息。输入 `s.uprins.com` 扫描链接，服务端取得跳转页面后自动拆分，解析结果统一显示为：邮资机编号 / 邮资机表头 / 当前总过戳数 / 验证码 / 宣传戳编号（原始扫描页中的旧名称保持不变）。原始内容支持斜杠分隔（`TFJ004/闽 AA39/...`）和「标签：值」两种格式，**宣传戳编号可为空**；当前总过戳数会去除前导零。若中间链接带有打印参数（`03_XJS...`），还会解析打印日期、打印金额（分）和当前图案过戳数（件）。若链接返回图片，会以 750px 宽居中显示在原始扫描内容下方（data URL，不落盘、不缓存）。未识别为机戳格式时回退显示原始内容；只有图片时直接显示图片 |
 | 网点检索 | 在 `base` 参考库中按行政区划 / 来源 / 关键字检索网点（含 `base_old` 历史归档，带「历史」徽标）。**单击「网点名称」弹出该网点的详细信息**：地址、开办业务、邮管局详情链接、历史归档原因与时间，以及与它匹配的收集记录（机构号 / 盖销日期 / 戳号） |
@@ -29,7 +29,10 @@
 | 国际退信 | 独立于「待发 / 在途 / 妥收」的一张表（侧边栏「邮件管理 · 国际退信」），记录一件寄往境外的邮件被退回直至收回的全过程：寄达国家（地区）中文名 / 英文名 / 二字代码（同源 `js/countries.js`，选候选或填代码自动补齐三项）、寄出方式（航空 / SAL / 水陆路）、邮件号码（13 位）、寄出 / 寄达 / 返回 / 收回 四个时间、境外接收 / 出口互换局、邮路信息（可增删途经点，相邻两点之间可填运送信息）、备注。邮路与备注不占列，单击「寄达国家（地区）」单元格弹窗查看；列表可按要素升降序排序，支持 JSON 导出 / 导入 |
 | 邮件查询 | 「邮件管理 · 查询」嵌入 17TRACK 官方 `externalcall.js` 组件，输入运单号即查（**需联网**，组件在首次进入该页时懒加载） |
 | 日戳图片 | 录入表单内直接上传图片：EXIF 方向自动纠正、任意角度旋转、裁剪 / 增强、命名规范化、保存到统一目录 |
-| 数据导入导出 | 基于 SheetJS 的 Excel 导入，CSV 导出 |
+| 数据安全 | 侧边栏「数据管理 · 数据安全」，三个页签：**备份与恢复**（四表 + 全部图片 + base 签名 + 版本号打成一个 zip；恢复前校验格式与版本，可选合并 / 覆盖；启动自动把四表快照到 `output/backup/`，保留最近 N 份）、**图片管理**（引用统计、孤儿图片清理、挂接到记录、旧目录 `output/images` 一键迁移）、**回收站**（删除的日戳记录保留 30 天，可恢复） |
+| 数据导入导出 | 基于 SheetJS 的 Excel 导入 / 导出，CSV 导出，JSON 导出 / 导入；导入按 id 与机构号判重，可选跳过 / 覆盖 / 作为新记录；内置 Excel 导入模板下载 |
+| 打印 / 贴片 | 「全部记录」工具栏：按省 / 年 / 邮局分组，每行 2 / 3 / 4 张，带缩略图与逐把戳号 / 材质；在打印对话框选「另存为 PDF」即可得到贴片 PDF |
+| 录入效率 | 保存并继续（保留省 / 市 / 县 / 日期）、同网点识别与追加戳号、草稿自动保存、Ctrl+S 保存 / Esc 关闭、复制上一条、最近网点、邮件号码扫码枪输入与 13 位信函条码即时校验 |
 | 持久化 | 浏览器 `localStorage`（详见 [前端数据存储](#前端数据存储)） |
 
 ### 日戳图片上传与处理
@@ -58,8 +61,10 @@
 所以文件系统操作全部落在服务端 `img-export.js`，由 `/api/images/*` 暴露；
 渲染层只负责解码、编辑与编码，且**整条链路只编码一次**（JPEG 不会被反复压缩）。
 
-图片默认写入 `output/images/<记录ID>/`，可用 `POSTMARK_IMAGES_DIR` 指到任意目录
+图片默认写入**项目根目录下的 `images/<记录ID>/`**，可用 `POSTMARK_IMAGES_DIR` 指到任意目录
 （例如 `D:\ApplicationData\Images`）。记录尚未保存时上传的图片先落在 `_unfiled/`。
+1.1 及更早版本把图片放在 `output/images/`，升级后仍会回退读取；可在「数据安全 → 图片管理」
+里一键迁移到新目录（记录里的相对路径不变）。
 
 ### 数据抓取与比对（主进程引擎）
 
@@ -270,10 +275,14 @@ postmark/
 ├── css/style.css
 ├── js/                   # 渲染进程模块
 │   ├── app.js            #   主应用，协调各视图与页面切换
+│   ├── calendar.js       #   全局统一日历弹窗（月历 / 年历切换，四处日期选择共用）
 │   ├── crawler.js        #   数据抓取页面（HTTP 客户端 + 报告弹窗渲染）
 │   ├── countries.js      #   国家（地区）参考库：中文名 / 英文名 / 二字代码 + 检索
 │   ├── data.js           #   行政区划参考数据（省→市→区县）
-│   ├── form.js           #   录入表单（含日戳图片区）
+│   ├── export-utils.js   #   CSV / Excel / JSON 导出工具（统一转义、列宽、文件名时间戳）
+│   ├── form.js           #   录入表单（图片区、逐把戳号材质、保存并继续 / 草稿 / 最近网点）
+│   ├── maintenance.js    #   数据安全：备份恢复 / 图片管理 / 回收站
+│   ├── print.js          #   打印 / 贴片排版（按省 / 年 / 邮局分组，带缩略图）
 │   ├── image.js          #   图片处理核心：校验 / EXIF / 编辑会话 / 渲染 / 导出
 │   ├── image-editor.js   #   图片编辑器界面（预览 + 裁剪框 + 旋转/增强面板）
 │   ├── img-naming.js     #   文件名规范化（与服务端共用同一份规则）
@@ -286,7 +295,7 @@ postmark/
 │   ├── returnstore.js    #   国际退信独立数据表（localStorage CRUD + 邮路结构）
 │   ├── return-list.js    #   国际退信列表、录入表单与寄达地详情弹窗
 │   ├── stats.js          #   统计面板
-│   ├── statistics.js     #   统计页（多图表数据看板 + 上海细化表）
+│   ├── statistics.js     #   统计页（维度分页看板 + 分省图表/明细）
 │   ├── store.js          #   收藏记录的 localStorage CRUD
 │   ├── tools.js          #   工具箱（首页入口 + 每页一个工具）
 │   └── track.js          #   邮件管理 · 查询（17TRACK 组件懒加载与调用）
@@ -303,12 +312,16 @@ postmark/
 │   ├── validators.js     #   必填 / 邮递区号 / 去重 / 数量核验
 │   ├── logger.js         #   控制台 + output/postal-crawl-*.log
 │   └── collectors/       #   hk.js / mo.js / tw.js / agencytw.js
-├── img-export.js         # 图片落盘：目录解析 / 命名兜底 / 原子写入 / 删除
+├── img-export.js         # 图片落盘：目录解析 / 命名兜底 / 原子写入 / 删除 / 旧目录迁移
+├── backup.js             # 整包备份与恢复：四表 + 图片打包、自动快照、暂存恢复
+├── zip-lite.js           # 无第三方依赖的 ZIP 读写（STORE / DEFLATE）
 ├── uprins.js             # 机戳查询（UPRINS 扫码链接解析 + 机戳字段 / 打印参数拆分 + 图片 data URL 提取，服务端）
 ├── txt_compare.exe       # 外部对比工具（旧版 vs 新版 CSV 差异）
 ├── base/                 # 基准数据：31 省 × (POST + SPB) = 62 个 CSV；另有港澳台 +base 文件
+├── images/               # 日戳图片（默认位置，可用 POSTMARK_IMAGES_DIR 改到别处；不入库）
 ├── output/               # 抓取产出与报告（不入库，见 .gitignore）
-│   └── images/           #   日戳图片（可用 POSTMARK_IMAGES_DIR 改到别处）
+│   ├── backup/           #   备份包（postmark-backup-*.zip）与自动快照（autosnapshot-*.json）
+│   └── images/           #   旧版图片目录（只读回退；可在「数据安全 → 图片管理」迁移）
 ├── geo/                  # 本地 GeoJSON，按行政区划代码命名
 ├── scripts/              # 测试、回归与代码生成脚本（见下）
 ├── crawler.py            # Python 原版爬虫（历史脚本，详见「Python 工具」）
@@ -335,9 +348,13 @@ postmark/
   对比时还会生成 `output/_refstage/` —— 应用后的 base 快照（当前库 + `base_old.csv`），
   供渲染进程刷新应用内参考库；它是可重建的中间产物，下一次对比会整目录重写。
   该目录已被 `.gitignore` 忽略。
-- `output/images/` 是**日戳图片**，按记录 ID 分子目录（如 `output/images/k3f9a2/`），
+- `images/` 是**日戳图片**，按记录 ID 分子目录（如 `images/k3f9a2/`），
   尚未关联记录的图片落在 `_unfiled/`。这个位置可以用环境变量 `POSTMARK_IMAGES_DIR` 覆盖，
-  例如指到 `D:\ApplicationData\Images`。
+  例如指到 `D:\ApplicationData\Images`。旧版目录 `output/images/` 仍会被回退读取，
+  迁移入口在「数据安全 → 图片管理」。
+- `output/backup/` 是**备份目录**：手动整包备份为 `postmark-backup-YYYYMMDD-HHMMSS.zip`
+  （四表 + 图片 + base 签名 + 版本号），启动自动快照为 `autosnapshot-*.json`（只含四表）。
+  自动快照保留份数由 `POSTMARK_BACKUP_KEEP` 控制（默认 20），手动备份包不会被自动清理。
 
 ### CSV 格式
 
@@ -375,20 +392,30 @@ postmark/
 | `POST /api/crawl/cancel` | 取消作业，body 为 `{ job: '<id>' }` |
 | `/api/base-files` | 列出 `base/` 下的 CSV |
 | `/api/output-files` | 列出 `output/` 下的 CSV |
-| `/api/images/config` | 图片目录、大小上限等配置（界面用来显示"保存位置"） |
-| `/api/images/exists?name=&subdir=` | 目标文件是否已存在（重名检测） |
-| `/api/images/list?subdir=&limit=` | 列出已保存的图片 |
+| `/api/images/config` | 图片目录（含旧目录）、大小上限等配置（界面用来显示"保存位置"） |
+| `/api/images/exists?name=&subdir=` | 目标文件是否已存在（重名检测，含旧目录回退） |
+| `/api/images/list?subdir=&limit=` | 列出已保存的图片（当前目录 + 旧目录） |
+| `/api/images/all` | 递归列出全部图片（图片管理 / 孤儿治理用） |
 | `POST /api/images/save` | 保存图片，body 为 `{ dataUrl, fileName, subdir, conflict }` |
-| `POST /api/images/delete` | 删除图片，body 为 `{ fileName, subdir }` |
+| `POST /api/images/delete` | 删除图片，body 为 `{ fileName, subdir }` 或 `{ relPath, legacy }` |
+| `POST /api/images/migrate-legacy` | 把 `output/images` 里的旧图片迁移到当前图片目录 |
+| `/api/backup/files` | 列出备份包（`.zip`）与自动快照（`.json`） |
+| `POST /api/backup/snapshot` | 写一份四表快照，body 为 `{ tables, reason }` |
+| `POST /api/backup/create` | 打整包备份，body 为 `{ tables, base }`，返回文件名 / 大小 / 图片统计 |
+| `POST /api/backup/inspect` | 上传备份包（`application/zip` 原始体），解到暂存目录并返回清单 |
+| `POST /api/backup/apply` | 确认恢复，body 为 `{ token, images: 'skip' \| 'overwrite' }` |
+| `POST /api/backup/discard` | 放弃恢复，body 为 `{ token }` |
+| `POST /api/backup/delete` | 删除某个备份文件，body 为 `{ name }` |
 | `POST /api/tools/uprins` | 机戳查询：解析 UPRINS 扫码链接，body 为 `{ url }`，返回 `{ ok, text, fields, image }`；`fields` 为识别出的机戳字段（最多 8 项：邮资机编号 / 邮资机表头 / 当前总过戳数 / 验证码 / 宣传戳编号 + 可选的打印日期 / 打印金额 / 当前图案过戳数，`宣传戳编号` 可能为空字符串），未识别时为 `null`；`image` 为 `data:image/...;base64,...` 或 `null`，每次请求重新生成，不缓存 |
-| `/images/*` | 读取已保存的图片（缩略图与预览） |
+| `/images/*` | 读取已保存的图片（当前目录没有时回退旧目录） |
 | `/base/*`、`/output/*` | 读取对应目录中的文件 |
 | 其余路径 | 项目目录内的静态文件 |
 
 同类型作业不并发（避免两个抓取同时抢占用源站请求频率），重复启动返回 `409`。
 `kind: 'crawl'` 的请求体还支持 `spbConcurrency`（1~4，默认 2），只影响邮管局省份任务的
 并发数；`doPost` / `doSpb` 与 `delay` / `interDelay` 的含义不变。
-请求体上限默认 1 MB（`/api/images/save` 放宽到能装下 50 MB 图片的 base64），
+请求体上限默认 1 MB（`/api/images/save` 放宽到能装下 50 MB 图片的 base64，
+`/api/backup/inspect` 以流式落盘接收备份包，上限 2 GB，可用 `POSTMARK_BACKUP_MAX_BYTES` 调整），
 图片只允许写入图片目录内，路径穿越与"扩展名与实际内容不符"都会被拒。
 
 ---
@@ -400,6 +427,9 @@ postmark/
 | 位置 | Key | 内容 |
 | --- | --- | --- |
 | localStorage | `postmark_records` | 全部收集记录（含旧版 `isClosed` → `status` 的兼容迁移） |
+| localStorage | `postmark_trash_records` | 回收站：软删除的收集记录（`deletedAt`，保留 30 天） |
+| localStorage | `postmark_entry_draft` | 录入表单草稿（关闭表单 / 刷新页面后恢复；保存成功即清除） |
+| localStorage | `postmark_autosnapshot_meta` | 启动自动快照的内容指纹与时间（6 小时内数据没变就不重复写） |
 | localStorage | `postmark_meter_records` | 邮资机戳（独立数据表，与日戳记录互不影响） |
 | localStorage | `postmark_meter_seeded` | 「从日戳记录移植」是否已自动执行过一次 |
 | localStorage | `postmark_meter_sort` | 邮资机戳列表的排序要素与方向（界面偏好） |
@@ -410,6 +440,10 @@ postmark/
 | IndexedDB `postmark` / `kv` | `poref_data_{adcode}` | 按省行政区划代码分表的 PO 记录 |
 | IndexedDB `postmark` / `kv` | `poref_base_old` | 历史归档记录（`base/base_old.csv` 的内容，带 `historical` / `archiveReason` / `archiveDate`） |
 | IndexedDB `postmark` / `kv` | `geojson_cache_{adcode}` | 已加载的 GeoJSON 缓存 |
+
+收集记录里的日戳从旧版 `stampNumbers: string[] + material: string` 自动迁移为
+`stamps: [{ number, material }]`（一把日戳一条，`number` 为空串表示「无戳号」）；
+旧字段仍会按新结构派生写回，方便旧导出 / 外部脚本继续读取。
 
 **为什么参考库不在 localStorage**：Chromium 对 localStorage 是每 origin 5 MiB 的硬配额，
 而全量 `base/`（62 个 CSV、约 10.9 万条记录）序列化后约 2200 万字符，是配额的 4 倍以上。

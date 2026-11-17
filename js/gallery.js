@@ -6,7 +6,7 @@
  * 数据来源
  * --------
  *   「录入日戳 → 日戳图片」保存的图片不会单独登记，只把**相对路径**写进
- *   记录的 photos: string[]（相对 output/images/，见 img-export.js）。
+ *   记录的 photos: string[]（相对 images/，见 img-export.js）。
  *   所以画廊不需要额外的索引：把所有记录的 photos 摊平，就是全部邮戳图片。
  *
  * 版式
@@ -33,6 +33,7 @@
 
   const STATUS_LABEL = {
     open: '营业',
+    delivery: '投递部',
     closed: '已撤销',
     themed: '主题邮局',
     temporary: '临时邮局',
@@ -149,12 +150,22 @@
     return items;
   }
 
+  /** 戳号 + 材质：优先走 RecordStore 的统一格式化（兼容旧记录） */
+  function stampText(rec, separator) {
+    if (typeof RecordStore !== 'undefined' && typeof RecordStore.formatStamps === 'function') {
+      return RecordStore.formatStamps(rec, separator);
+    }
+    const stamps = Array.isArray(rec && rec.stampNumbers) ? rec.stampNumbers : [];
+    const material = rec && rec.material ? `（${rec.material}）` : '';
+    return stamps.map(s => `${s || '无戳号'}${material}`).join(separator || '、');
+  }
+
   function haystack(rec) {
     return [
       rec.postOffice, rec.institutionCode, rec.postalCode,
-      Array.isArray(rec.stampNumbers) ? rec.stampNumbers.join(' ') : '',
+      stampText(rec, ' '),
       Array.isArray(rec.scenicNames) ? rec.scenicNames.join(' ') : '',
-      rec.material, rec.notes, rec.province, rec.city, rec.district,
+      rec.notes, rec.province, rec.city, rec.district,
     ].map((v) => String(v == null ? '' : v)).join(' ').toLowerCase();
   }
 
@@ -226,9 +237,7 @@
   function tileHtml(it, idx) {
     const r = it.record;
     const date = fmtCancelDate(r.cancelDate);
-    const stamps = Array.isArray(r.stampNumbers) && r.stampNumbers.length
-      ? ` · ${r.stampNumbers.join(',')} 号`
-      : '';
+    const stamps = stampText(r, ',') ? ` · ${stampText(r, ',')}` : '';
     const countBadge = it.photoCount > 1
       ? `<span class="gallery-tile-count">${it.photoIndex}/${it.photoCount}</span>`
       : '';
@@ -342,10 +351,9 @@
     const rows = [];
     rows.push(row('邮政编码', r.postalCode, '-'));
     rows.push(row('机构号', r.institutionCode, '-'));
-    rows.push(row('邮局状态', STATUS_LABEL[r.status] || r.status, '-'));
+    rows.push(row('邮局类型/状态', STATUS_LABEL[r.status] || r.status, '-'));
     rows.push(row('盖销日期', fmtCancelDate(r.cancelDate), '-'));
-    rows.push(row('戳号', Array.isArray(r.stampNumbers) ? r.stampNumbers.join(', ') : ''));
-    rows.push(row('材质', r.material));
+    rows.push(row('戳号 / 材质', stampText(r, '、')));
     if (r.hasScenicPostmark) {
       rows.push(row('风景（文化）日戳',
         Array.isArray(r.scenicNames) ? r.scenicNames.join('、') : '', '（已标记，未填名称）'));

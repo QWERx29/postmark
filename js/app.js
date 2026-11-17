@@ -220,6 +220,7 @@
   let meterPageOpen = false;
   let galleryPageOpen = false;
   let statisticsPageOpen = false;
+  let maintenancePageOpen = false;
   const toolsPage = $('tools-page');
   const poSearchPage = $('po-search-page');
   const crawlerPage = $('crawler-page');
@@ -229,6 +230,7 @@
   const meterPage = $('meter-page');
   const galleryPage = $('gallery-page');
   const statisticsPage = $('statistics-page');
+  const maintenancePage = $('maintenance-page');
   const mailPageTitle = $('mail-page-title');
   const mailPlaceholderTitle = $('mail-placeholder-title');
   const mailPlaceholderCard = $('mail-placeholder-card');
@@ -237,11 +239,18 @@
   const mailReturnCard = $('mail-return-card');
   const recordsPage = $('records-page');
   const recordsTbody = $('records-tbody');
+  const recordsTbodyScroll = $('records-tbody-scroll');
   const recordsCount = $('records-count');
   const recordsSearch = $('f-records-search');
   const recordsProvince = $('f-records-province');
   const recordsCity = $('f-records-city');
   const recordsDistrict = $('f-records-district');
+  const recordsPager = $('records-pager');
+  const recordsPagerInfo = $('records-pager-info');
+  const btnRecordsLoadMore = $('btn-records-load-more');
+  /** 「全部记录」每次渲染的行数；未筛选时先只渲染这么多 */
+  const RECORDS_PAGE_SIZE = 50;
+  let recordsShown = RECORDS_PAGE_SIZE;
   let filterProvince = '';
   let filterCity = '';
   let filterDistrict = '';
@@ -272,6 +281,7 @@
     if (mailPageOpen) hideMailPage();
     if (meterPageOpen) hideMeterPage();
     if (galleryPageOpen) hideGalleryPage();
+    if (maintenancePageOpen) hideMaintenancePage();
     // 隐藏主视图，显示记录页
     $('main-container').style.display = 'none';
     $('btn-add-record-fab').style.display = 'none';
@@ -287,7 +297,7 @@
     populateRecordsCity();
     // 填充区县筛选下拉
     populateRecordsDistrict();
-    renderRecordsTable(recordsSearch.value);
+    renderRecordsTable(recordsSearch.value, { reset: true });
     setActiveNav('records');
   }
 
@@ -335,6 +345,7 @@
     recordsDistrict.innerHTML = '<option value="">全部区县</option>';
     recordsDistrict.disabled = true;
     recordsSearch.value = '';
+    recordsShown = RECORDS_PAGE_SIZE;
     setActiveNav('overview');
   }
 
@@ -354,11 +365,20 @@
     }
   }
 
-  function renderRecordsTable(filter) {
-    const all = RecordStore.getAll();
-    const filtered = all.filter(r => {
-      // 文本搜索
-      if (filter && !r.postOffice.includes(filter) && !r.institutionCode.includes(filter)) return false;
+  /**
+   * 渲染「全部记录」。
+   * 未筛选时默认只渲染前 RECORDS_PAGE_SIZE 条，避免一次插入大量 DOM；
+   * 点「加载更多」继续渲染下一页，选择省份 / 搜索时回到第一页。
+   */
+  function filterRecords(all, filter) {
+    const term = String(filter == null ? '' : filter).trim();
+    return all.filter(r => {
+      // 文本搜索（邮局名 / 机构号；字段缺失时按空串处理，不抛错）
+      if (term) {
+        const office = String(r.postOffice || '');
+        const inst = String(r.institutionCode || '');
+        if (!office.includes(term) && !inst.includes(term)) return false;
+      }
       // 省份筛选
       if (filterProvince && r.province !== filterProvince) return false;
       // 城市筛选
@@ -367,17 +387,36 @@
       if (filterDistrict && r.district !== filterDistrict) return false;
       return true;
     });
+  }
+
+  /** 当前「全部记录」页的筛选结果（打印 / 贴片按它排版） */
+  function getFilteredRecords() {
+    return filterRecords(RecordStore.getAll(), recordsSearch.value);
+  }
+
+  function renderRecordsTable(filter, options) {
+    const opts = options || {};
+    if (opts.reset) recordsShown = RECORDS_PAGE_SIZE;
+
+    const all = RecordStore.getAll();
+    const filtered = filterRecords(all, filter);
     recordsCount.textContent = `共 ${all.length} 条记录`;
 
     const selectedIds = new Set(getSelectedIds());
     const COLSPAN = 9;
+    const total = filtered.length;
+    const shown = Math.min(recordsShown, total);
+    const visible = filtered.slice(0, shown);
 
-    if (filtered.length === 0) {
+    if (total === 0) {
       recordsTbody.innerHTML = `<tr><td colspan="${COLSPAN}" style="text-align:center;color:#999;padding:20px;">暂无记录</td></tr>`;
+      renderRecordsPager(0, 0);
+      updateBatchBar();
+      if (opts.reset && recordsTbodyScroll) recordsTbodyScroll.scrollTop = 0;
       return;
     }
 
-    recordsTbody.innerHTML = filtered.map(r => `
+    recordsTbody.innerHTML = visible.map(r => `
       <tr>
         <td style="width:32px;"><input type="checkbox" class="rec-select" data-id="${r.id}"${selectedIds.has(r.id) ? ' checked' : ''}></td>
         <td style="width:110px;font-family:monospace;font-size:11px;">${r.institutionCode}</td>
@@ -386,7 +425,7 @@
         <td style="width:150px;">${escHtml(r.district || '')}</td>
         <td>${escHtml(r.postOffice)}</td>
         <td style="width:140px;">${fmtCancelDate(r.cancelDate)}</td>
-        <td style="width:120px;">${r.stampNumbers ? r.stampNumbers.join(', ') : '-'}</td>
+        <td style="width:140px;">${escHtml(RecordStore.formatStampNumbers(r)) || '-'}</td>
         <td style="width:100px;" class="rec-actions">
           <button class="btn-edit" data-id="${r.id}">编辑</button>
           <button class="btn-del" data-id="${r.id}">删除</button>
@@ -407,15 +446,42 @@
       });
     });
 
-    // 删除按钮
+    // 删除按钮（移入回收站，30 天内可恢复）
     recordsTbody.querySelectorAll('.btn-del').forEach(btn => {
       btn.addEventListener('click', async () => {
-        if (await Dialog.confirm('确定删除此记录？')) {
+        if (await Dialog.confirm('确定删除此记录？\n\n记录会先移入回收站，30 天内可在「数据安全 → 回收站」恢复。')) {
           RecordStore.delete(btn.dataset.id);
           renderRecordsTable(recordsSearch.value);
         }
       });
     });
+
+    // 全选框跟随当前可见行
+    const selectAll = $('select-all');
+    if (selectAll) {
+      const boxes = Array.from(recordsTbody.querySelectorAll('.rec-select'));
+      selectAll.checked = boxes.length > 0 && boxes.every(cb => cb.checked);
+    }
+
+    renderRecordsPager(shown, total);
+    updateBatchBar();
+
+    // 筛选 / 搜索变化时回到列表顶部
+    if (opts.reset && recordsTbodyScroll) recordsTbodyScroll.scrollTop = 0;
+  }
+
+  /** 更新「全部记录」顶部的已显示条数与加载更多按钮 */
+  function renderRecordsPager(shown, total) {
+    if (!recordsPager || !recordsPagerInfo || !btnRecordsLoadMore) return;
+
+    if (total === 0) {
+      recordsPager.hidden = true;
+      return;
+    }
+
+    recordsPager.hidden = false;
+    recordsPagerInfo.textContent = `已显示 ${shown} / ${total} 条`;
+    btnRecordsLoadMore.hidden = shown >= total;
   }
 
   function escHtml(s) {
@@ -586,7 +652,20 @@
 
     if (!(await Dialog.confirm(`确定将更新 ${ids.length} 条记录的以下字段：\n${Object.keys(updates).join('、')}？`))) return;
 
-    ids.forEach(id => RecordStore.update(id, updates));
+    ids.forEach(id => {
+      const rec = RecordStore.getById(id);
+      const patch = { ...updates };
+      // 材质与戳号绑定：批量改材质时，把这条记录的每一把日戳都改成该材质
+      if (patch.material != null) {
+        const material = patch.material;
+        delete patch.material;
+        const stamps = RecordStore.getStamps(rec);
+        patch.stamps = stamps.length
+          ? stamps.map(s => ({ ...s, material }))
+          : [{ number: '', material }];
+      }
+      RecordStore.update(id, patch);
+    });
     closeBatchModal();
     renderRecordsTable(recordsSearch.value);
   });
@@ -618,6 +697,7 @@
     if (mailPageOpen) hideMailPage();
     if (meterPageOpen) hideMeterPage();
     if (galleryPageOpen) hideGalleryPage();
+    if (maintenancePageOpen) hideMaintenancePage();
     hideActiveToolPage();
     $('main-container').style.display = 'none';
     $('btn-add-record-fab').style.display = 'none';
@@ -640,6 +720,7 @@
     if (mailPageOpen) hideMailPage();
     if (meterPageOpen) hideMeterPage();
     if (galleryPageOpen) hideGalleryPage();
+    if (maintenancePageOpen) hideMaintenancePage();
     hideActiveToolPage();
 
     activeToolPage = page;
@@ -687,6 +768,7 @@
     if (mailPageOpen) hideMailPage();
     if (meterPageOpen) hideMeterPage();
     if (galleryPageOpen) hideGalleryPage();
+    if (maintenancePageOpen) hideMaintenancePage();
     $('main-container').style.display = 'none';
     $('btn-add-record-fab').style.display = 'none';
     poSearchPage.style.display = 'flex';
@@ -720,6 +802,7 @@
     if (mailPageOpen) hideMailPage();
     if (meterPageOpen) hideMeterPage();
     if (galleryPageOpen) hideGalleryPage();
+    if (maintenancePageOpen) hideMaintenancePage();
     $('main-container').style.display = 'none';
     $('btn-add-record-fab').style.display = 'none';
     crawlerPage.style.display = 'flex';
@@ -755,6 +838,7 @@
     if (mailPageOpen) hideMailPage();
     if (meterPageOpen) hideMeterPage();
     if (galleryPageOpen) hideGalleryPage();
+    if (maintenancePageOpen) hideMaintenancePage();
     $('main-container').style.display = 'none';
     $('btn-add-record-fab').style.display = 'none';
     postalSearchPage.style.display = 'flex';
@@ -782,6 +866,7 @@
     if (mailPageOpen) hideMailPage();
     if (meterPageOpen) hideMeterPage();
     if (galleryPageOpen) hideGalleryPage();
+    if (maintenancePageOpen) hideMaintenancePage();
     $('main-container').style.display = 'none';
     $('btn-add-record-fab').style.display = 'none';
     postalCrawlerPage.style.display = 'flex';
@@ -818,6 +903,8 @@
     if (postalSearchPageOpen) hidePostalSearchPage();
     if (postalCrawlerPageOpen) hidePostalCrawlerPage();
     if (mailPageOpen) hideMailPage();
+    if (galleryPageOpen) hideGalleryPage();
+    if (maintenancePageOpen) hideMaintenancePage();
     $('main-container').style.display = 'none';
     $('btn-add-record-fab').style.display = 'none';
     meterPage.style.display = 'flex';
@@ -851,6 +938,7 @@
     if (postalCrawlerPageOpen) hidePostalCrawlerPage();
     if (mailPageOpen) hideMailPage();
     if (meterPageOpen) hideMeterPage();
+    if (maintenancePageOpen) hideMaintenancePage();
     $('main-container').style.display = 'none';
     $('btn-add-record-fab').style.display = 'none';
     galleryPage.style.display = 'flex';
@@ -886,6 +974,7 @@
     if (mailPageOpen) hideMailPage();
     if (meterPageOpen) hideMeterPage();
     if (galleryPageOpen) hideGalleryPage();
+    if (maintenancePageOpen) hideMaintenancePage();
     $('main-container').style.display = 'none';
     $('btn-add-record-fab').style.display = 'none';
     statisticsPage.style.display = 'flex';
@@ -910,6 +999,40 @@
   });
 
   // ============================================================
+  // 数据安全页面（备份 / 恢复 / 图片管理 / 回收站）
+  // ============================================================
+  function showMaintenancePage() {
+    maintenancePageOpen = true;
+    if (recordsPageOpen) hideRecordsPage();
+    if (toolsPageOpen) hideToolsPage();
+    if (statisticsPageOpen) hideStatisticsPage();
+    if (poSearchPageOpen) hidePOSearchPage();
+    if (crawlerPageOpen) hideCrawlerPage();
+    if (postalSearchPageOpen) hidePostalSearchPage();
+    if (postalCrawlerPageOpen) hidePostalCrawlerPage();
+    if (mailPageOpen) hideMailPage();
+    if (meterPageOpen) hideMeterPage();
+    if (galleryPageOpen) hideGalleryPage();
+    $('main-container').style.display = 'none';
+    $('btn-add-record-fab').style.display = 'none';
+    maintenancePage.style.display = 'flex';
+    if (typeof MaintenancePage !== 'undefined') MaintenancePage.show();
+    setActiveNav('maintenance');
+  }
+
+  function hideMaintenancePage() {
+    maintenancePageOpen = false;
+    maintenancePage.style.display = 'none';
+    $('main-container').style.display = '';
+    $('btn-add-record-fab').style.display = '';
+    if (typeof MaintenancePage !== 'undefined') MaintenancePage.hide();
+    setActiveNav('overview');
+  }
+
+  $('btn-show-maintenance').addEventListener('click', showMaintenancePage);
+  $('btn-maintenance-back').addEventListener('click', hideMaintenancePage);
+
+  // ============================================================
   // 地图总览页面（侧边栏第一项）
   // ============================================================
   function showOverviewPage() {
@@ -923,6 +1046,7 @@
     if (mailPageOpen) hideMailPage();
     if (meterPageOpen) hideMeterPage();
     if (galleryPageOpen) hideGalleryPage();
+    if (maintenancePageOpen) hideMaintenancePage();
     // 收起动作会把主视图恢复回来，这里再统一亮一次总览
     $('main-container').style.display = '';
     $('btn-add-record-fab').style.display = '';
@@ -965,6 +1089,7 @@
     if (postalCrawlerPageOpen) hidePostalCrawlerPage();
     if (meterPageOpen) hideMeterPage();
     if (galleryPageOpen) hideGalleryPage();
+    if (maintenancePageOpen) hideMaintenancePage();
     $('main-container').style.display = 'none';
     $('btn-add-record-fab').style.display = 'none';
 
@@ -1013,11 +1138,11 @@
   $('btn-refresh').addEventListener('click', () => {
     refreshAllViews();
     refreshStatisticsIfVisible();
-    if (recordsPageOpen) renderRecordsTable(recordsSearch.value);
+    if (recordsPageOpen) renderRecordsTable(recordsSearch.value, { reset: true });
   });
 
   recordsSearch.addEventListener('input', () => {
-    renderRecordsTable(recordsSearch.value.trim());
+    renderRecordsTable(recordsSearch.value.trim(), { reset: true });
   });
 
   recordsProvince.addEventListener('change', () => {
@@ -1026,20 +1151,27 @@
     filterDistrict = '';
     populateRecordsCity();
     populateRecordsDistrict();
-    renderRecordsTable(recordsSearch.value.trim());
+    renderRecordsTable(recordsSearch.value.trim(), { reset: true });
   });
 
   recordsCity.addEventListener('change', () => {
     filterCity = recordsCity.value;
     filterDistrict = '';
     populateRecordsDistrict();
-    renderRecordsTable(recordsSearch.value.trim());
+    renderRecordsTable(recordsSearch.value.trim(), { reset: true });
   });
 
   recordsDistrict.addEventListener('change', () => {
     filterDistrict = recordsDistrict.value;
-    renderRecordsTable(recordsSearch.value.trim());
+    renderRecordsTable(recordsSearch.value.trim(), { reset: true });
   });
+
+  if (btnRecordsLoadMore) {
+    btnRecordsLoadMore.addEventListener('click', () => {
+      recordsShown += RECORDS_PAGE_SIZE;
+      renderRecordsTable(recordsSearch.value.trim());
+    });
+  }
 
   // 全选
   $('select-all').addEventListener('change', function () {
@@ -1050,12 +1182,16 @@
   // 批量编辑按钮
   $('btn-batch-edit').addEventListener('click', openBatchModal);
 
-  // 批量删除
+  // 批量删除（移入回收站；删除前自动落一份四表快照）
   $('btn-batch-delete').addEventListener('click', async () => {
     const ids = getSelectedIds();
     if (ids.length === 0) return;
-    if (!(await Dialog.confirm(`确定删除选中的 ${ids.length} 条记录？`))) return;
-    if (!(await Dialog.confirm('再次确认删除？此操作不可恢复！'))) return;
+    if (!(await Dialog.confirm(
+      `确定把选中的 ${ids.length} 条记录移入回收站？\n\n30 天内可在「数据安全 → 回收站」恢复。`
+    ))) return;
+    if (typeof MaintenancePage !== 'undefined') {
+      await MaintenancePage.snapshotBeforeDestructive('before-batch-delete');
+    }
     ids.forEach(id => RecordStore.delete(id));
     renderRecordsTable(recordsSearch.value);
   });
@@ -1070,6 +1206,9 @@
   // 键盘
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+      // 录入表单 / 图片编辑器 / 自定义对话框都是独立模态层：
+      // Esc 应由它们自己处理，不能顺手把背后的页面也切走。
+      if (document.querySelector('#form-overlay.active, #image-editor-overlay.active, #dialog-overlay.active')) return;
       // 报告弹窗叠在页面之上，Esc 应先收起它，而不是把整个「数据抓取」页也关掉
       if (window.CrawlerPage && window.CrawlerPage.closeReport()) return;
       // 邮件「新增 / 编辑」表单同理
@@ -1083,6 +1222,10 @@
       if (window.Tools && window.Tools.closePODetail()) return;
       // 邮戳图片详情叠在画廊页之上
       if (window.GalleryPage && window.GalleryPage.closeDetail()) return;
+      // 数据安全页里的挂接 / 预览弹窗叠在页面上
+      if (window.MaintenancePage && window.MaintenancePage.closeModal()) return;
+      // 打印 / 贴片选项弹窗
+      if (window.PrintPage && window.PrintPage.close()) return;
       if (batchModalOpen) closeBatchModal();
       else if (toolsPageOpen) hideToolsPage();
       else if (poSearchPageOpen) hidePOSearchPage();
@@ -1093,6 +1236,7 @@
       else if (meterPageOpen) hideMeterPage();
       else if (galleryPageOpen) hideGalleryPage();
       else if (statisticsPageOpen) hideStatisticsPage();
+      else if (maintenancePageOpen) hideMaintenancePage();
       else if (recordsPageOpen) hideRecordsPage();
     }
   });
@@ -1112,9 +1256,193 @@
     URL.revokeObjectURL(url);
   });
 
+  // ---- 全字段导出：Excel / CSV ----
+  // 逐把戳号 / 材质各自占列（戳号1、材质1、戳号2…），图片路径、邮资机、风景戳、状态都导出。
+  const RECORD_STATUS_LABEL = {
+    open: '营业',
+    delivery: '投递部',
+    closed: '已撤销',
+    themed: '主题邮局',
+    temporary: '临时邮局',
+  };
+
+  /** 盖销日期导出为 YYYY.MM.DD.HH（可读，且 Excel 导入能还原小时） */
+  function fmtExportDate(val) {
+    const s = String(val == null ? '' : val);
+    if (/^\d{10}$/.test(s)) {
+      return `${s.slice(0, 4)}.${s.slice(4, 6)}.${s.slice(6, 8)}.${s.slice(8, 10)}`;
+    }
+    return s;
+  }
+
+  function fmtExportTime(val) {
+    if (!val) return '';
+    const d = new Date(val);
+    if (Number.isNaN(d.getTime())) return String(val);
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  function buildRecordExport(records) {
+    const maxStamps = records.reduce((m, r) => Math.max(m, RecordStore.getStamps(r).length), 1);
+    const headers = [
+      '省', '市', '县/区', '邮局名称', '邮政编码', '机构号',
+      '邮局类型/状态', '盖销日期',
+    ];
+    for (let i = 1; i <= maxStamps; i++) headers.push(`戳号${i}`, `材质${i}`);
+    headers.push('邮资机型号', '邮资机编号', '表头', '下环', '风景日戳', '图片路径', '备注', '录入时间');
+
+    const rows = records.map((r) => {
+      const stamps = RecordStore.getStamps(r);
+      const row = [
+        r.province || '',
+        r.city || '',
+        r.district || '',
+        r.postOffice || '',
+        r.postalCode || '',
+        r.institutionCode || '',
+        RECORD_STATUS_LABEL[r.status] || r.status || '',
+        fmtExportDate(r.cancelDate),
+      ];
+      for (let i = 0; i < maxStamps; i++) {
+        const s = stamps[i];
+        row.push(s ? (s.number || '无戳号') : '', s ? (s.material || '') : '');
+      }
+      row.push(
+        r.hasPostageMeter ? (r.meterModel || '') : '',
+        r.hasPostageMeter ? (r.meterNo || '') : '',
+        r.hasPostageMeter ? (r.meterHeader || '') : '',
+        r.hasPostageMeter ? (r.meterLowerRing || '') : '',
+        Array.isArray(r.scenicNames) ? r.scenicNames.join('、') : '',
+        Array.isArray(r.photos) ? r.photos.join('; ') : '',
+        r.notes || '',
+        fmtExportTime(r.createdAt)
+      );
+      return row;
+    });
+
+    return { headers, rows };
+  }
+
+  $('btn-export-excel').addEventListener('click', async () => {
+    const records = RecordStore.getAll();
+    if (records.length === 0) { await Dialog.alert('暂无数据可导出'); return; }
+    if (typeof ExportUtils === 'undefined') { await Dialog.alert('导出组件未加载，请刷新页面'); return; }
+    try {
+      const { headers, rows } = buildRecordExport(records);
+      ExportUtils.downloadXlsx(
+        `日戳记录-${ExportUtils.fileDate()}.xlsx`,
+        '日戳记录',
+        headers,
+        rows
+      );
+    } catch (e) {
+      await Dialog.alert('导出 Excel 失败: ' + e.message);
+    }
+  });
+
+  $('btn-export-csv').addEventListener('click', async () => {
+    const records = RecordStore.getAll();
+    if (records.length === 0) { await Dialog.alert('暂无数据可导出'); return; }
+    if (typeof ExportUtils === 'undefined') { await Dialog.alert('导出组件未加载，请刷新页面'); return; }
+    const { headers, rows } = buildRecordExport(records);
+    ExportUtils.downloadCsv(`日戳记录-${ExportUtils.fileDate()}.csv`, headers, rows);
+  });
+
+  // ---- Excel 导入模板 ----
+  // 列名必须与 EXCEL_COL_MAP 的键一致，否则导入时认不出来。
+  const EXCEL_TEMPLATE_HEADERS = [
+    '省', '市', '县', '邮局名称', '邮政编码', '机构号', '盖销日期',
+    '戳号', '材质', '邮局类型/状态',
+    '邮资机型号', '邮资机编号', '表头', '下环', '风景日戳', '备注',
+  ];
+  const EXCEL_TEMPLATE_EXAMPLE = [
+    '北京市', '北京市', '西城区', '中南海邮政支局', '100017', '10001701', '2026.09.30.15',
+    '1', '拨轮', '营业',
+    '', '', '', '', '', '示例行，导入前请删除',
+  ];
+  const EXCEL_TEMPLATE_NOTES = [
+    ['列名', '是否必填', '说明'],
+    ['省', '必填', '与参考库一致的省名，例如：北京市 / 河北省 / 香港特别行政区'],
+    ['市', '必填', '地级市名；直辖市与省名相同'],
+    ['县', '选填', '县 / 区 / 县级市名'],
+    ['邮局名称', '必填', '例如：中南海邮政支局'],
+    ['邮政编码', '必填', '6 位数字；缺机构号时会据此生成'],
+    ['机构号', '选填', '8 位数字；留空则按邮编自动生成'],
+    ['盖销日期', '必填', '支持 2026.09.30.15 / 2026093015 / 2026-09-30 三种写法'],
+    ['戳号', '选填', '多把日戳用顿号或逗号分隔，例如：1、2、无戳号'],
+    ['材质', '选填', '拨轮 / 字钉 / 回墨 / 储墨 / 光敏 / 其他；多把日戳会统一使用该材质'],
+    ['邮局类型/状态', '选填', '营业 / 投递部 / 已撤销 / 主题邮局 / 临时邮局；留空按营业'],
+    ['风景日戳', '选填', '多个名称用顿号或逗号分隔'],
+    ['备注', '选填', '自由文本'],
+    [],
+    ['提示', '', '「戳号 / 材质」一列一把日戳；需要逐把不同材质时请用 JSON 导入或直接在界面录入。'],
+  ];
+
+  $('btn-excel-template').addEventListener('click', async () => {
+    if (typeof ExportUtils === 'undefined') { await Dialog.alert('导出组件未加载，请刷新页面'); return; }
+    try {
+      ExportUtils.downloadXlsx(
+        '日戳导入模板.xlsx',
+        '日戳记录',
+        EXCEL_TEMPLATE_HEADERS,
+        [EXCEL_TEMPLATE_EXAMPLE],
+        { extraSheets: [{ name: '填写说明', aoa: EXCEL_TEMPLATE_NOTES }] }
+      );
+    } catch (e) {
+      await Dialog.alert('生成模板失败: ' + e.message);
+    }
+  });
+
+  // ---- 打印 / 贴片 ----
+  $('btn-print-records').addEventListener('click', async () => {
+    if (typeof PrintPage === 'undefined') { await Dialog.alert('打印模块未加载，请刷新页面'); return; }
+    const records = getFilteredRecords();
+    if (records.length === 0) {
+      await Dialog.alert('当前筛选结果为空，没有可打印的记录。');
+      return;
+    }
+    PrintPage.open(records);
+  });
+
   $('btn-import-json').addEventListener('click', () => {
     $('f-import-file').click();
   });
+
+  /**
+   * 导入前问一次重复处理方式（JSON / Excel 共用）。
+   * @param {{total:number, duplicates:number, byId:number, byInstCode:number, invalid:number}} plan
+   * @returns {Promise<'skip'|'overwrite'|'new'|null>} null 表示取消
+   */
+  async function askImportStrategy(plan) {
+    const parts = [];
+    if (plan.byId) parts.push(`id 相同 ${plan.byId} 条`);
+    if (plan.byInstCode) parts.push(`机构号相同 ${plan.byInstCode} 条`);
+
+    const msg = `共 ${plan.total} 条待导入，其中 ${plan.duplicates} 条与现有记录重复`
+      + (parts.length ? `（${parts.join('，')}）` : '')
+      + '。\n\n请选择处理方式：\n'
+      + '· 跳过重复：保留现有记录，只导入新的\n'
+      + '· 覆盖现有：用导入内容覆盖重复记录（保留原 id）\n'
+      + '· 作为新记录：换新 id 导入，允许同机构号并存';
+
+    const choice = await Dialog.choice(msg, [
+      { value: 'skip', label: '跳过重复', primary: true },
+      { value: 'overwrite', label: '覆盖现有' },
+      { value: 'new', label: '作为新记录' },
+      { value: 'cancel', label: '取消导入' },
+    ]);
+    return choice === 'cancel' ? null : choice;
+  }
+
+  /** 导入结果的一句话摘要 */
+  function importReportText(result) {
+    const parts = [`新增 ${result.added} 条`];
+    if (result.updated) parts.push(`覆盖 ${result.updated} 条`);
+    if (result.skipped) parts.push(`跳过重复 ${result.skipped} 条`);
+    if (result.invalid) parts.push(`忽略无效 ${result.invalid} 条`);
+    return parts.join('，');
+  }
 
   $('f-import-file').addEventListener('change', (e) => {
     const file = e.target.files[0];
@@ -1124,18 +1452,20 @@
       try {
         const records = JSON.parse(ev.target.result);
         if (!Array.isArray(records)) throw new Error('格式错误');
-        let imported = 0;
-        records.forEach(r => {
-          if (r.postOffice && r.province) {
-            if (!r.institutionCode && r.postalCode) {
-              r.institutionCode = RecordStore.generateInstCode(r.postalCode);
-            }
-            RecordStore.add(r);
-            imported++;
-          }
-        });
-        await Dialog.alert(`成功导入 ${imported} 条记录`);
-        renderRecordsTable(recordsSearch.value);
+        if (records.length === 0) { await Dialog.alert('文件里没有记录'); return; }
+
+        // 按 id / 机构号判重：同一份备份导两次不会翻倍
+        const plan = RecordStore.planImport(records);
+        let strategy = 'skip';
+        if (plan.duplicates > 0) {
+          const choice = await askImportStrategy(plan);
+          if (!choice) return;
+          strategy = choice;
+        }
+
+        const result = RecordStore.importRecords(records, { strategy });
+        await Dialog.alert(`导入完成：${importReportText(result)}`);
+        renderRecordsTable(recordsSearch.value, { reset: true });
       } catch (err) {
         await Dialog.alert('导入失败: ' + err.message);
       }
@@ -1163,7 +1493,7 @@
     '下环': 'meterLowerRing',
     '风景日戳': 'scenicNames', '风景日戳名称': 'scenicNames', '文化日戳': 'scenicNames',
     '备注': 'notes',
-    '状态': 'status', '邮局状态': 'status',
+    '状态': 'status', '邮局状态': 'status', '邮局类型/状态': 'status',
   };
 
   function parseExcelValue(val, field) {
@@ -1176,6 +1506,7 @@
       const s = String(val).trim();
       // 兼容旧数据: 已撤销/是/true/1 → 'closed'
       if (s === '已撤销' || s === 'closed') return 'closed';
+      if (s === '投递部' || s === 'delivery') return 'delivery';
       if (s === '主题邮局' || s === 'themed') return 'themed';
       if (s === '临时邮局' || s === 'temporary') return 'temporary';
       // 旧格式兼容: 是/true/1 → 'closed'
@@ -1230,8 +1561,8 @@
         const mappedCount = Object.values(fieldMap).filter(Boolean).length;
         if (mappedCount === 0) throw new Error('无法识别表头列名，请参考模板');
 
-        let imported = 0;
-        let errors = [];
+        const parsed = [];
+        const errors = [];
         rows.forEach((row, i) => {
           try {
             const record = {};
@@ -1245,20 +1576,34 @@
             if (!record.institutionCode && record.postalCode) {
               record.institutionCode = RecordStore.generateInstCode(record.postalCode);
             }
-            RecordStore.add(record);
-            imported++;
+            parsed.push(record);
           } catch (err) {
             errors.push(`第 ${i + 2} 行: ${err.message}`);
           }
         });
 
-        let msg = `成功导入 ${imported} 条记录`;
+        // 与 JSON 导入共用同一套去重逻辑（按 id / 机构号）
+        let strategy = 'skip';
+        if (parsed.length > 0) {
+          const plan = RecordStore.planImport(parsed);
+          if (plan.duplicates > 0) {
+            const choice = await askImportStrategy(plan);
+            if (!choice) return;
+            strategy = choice;
+          }
+        }
+
+        const result = parsed.length > 0
+          ? RecordStore.importRecords(parsed, { strategy })
+          : { added: 0, updated: 0, skipped: 0, invalid: 0 };
+
+        let msg = `导入完成：${importReportText(result)}`;
         if (errors.length > 0) {
           msg += `\n跳过 ${errors.length} 条:\n${errors.slice(0, 5).join('\n')}`;
           if (errors.length > 5) msg += `\n...及其他 ${errors.length - 5} 条`;
         }
         await Dialog.alert(msg);
-        renderRecordsTable(recordsSearch.value);
+        renderRecordsTable(recordsSearch.value, { reset: true });
       } catch (err) {
         await Dialog.alert('导入失败: ' + err.message);
       }
@@ -1271,10 +1616,19 @@
   // 清空
   // ============================================================
   $('btn-clear-records').addEventListener('click', async () => {
-    if (!(await Dialog.confirm('确定清空所有记录？此操作不可恢复！'))) return;
+    if (!(await Dialog.confirm(
+      '确定清空所有日戳记录？\n\n清空前会自动保存一份四表快照到 output/backup/，'
+      + '但快照只含数据、不含图片；重要数据请先用「数据安全 → 打包备份」做整包备份。'
+    ))) return;
     if (!(await Dialog.confirm('再次确认：清空所有日戳记录？'))) return;
+
+    if (typeof MaintenancePage !== 'undefined') {
+      const snap = await MaintenancePage.snapshotBeforeDestructive('before-clear');
+      if (!snap && !(await Dialog.confirm('快照保存失败，仍要继续清空吗？'))) return;
+    }
+
     RecordStore.clear();
-    renderRecordsTable('');
+    renderRecordsTable('', { reset: true });
   });
 
   // 初始化批量编辑模块
@@ -1436,6 +1790,12 @@
     console.error('应用初始化失败:', err);
     loadingEl.querySelector('p').textContent = '加载失败: ' + err.message;
     loadingEl.querySelector('.spinner').style.display = 'none';
+  }
+
+  // 启动自动快照：把四表 dump 到 output/backup/（保留最近 N 份）。
+  // 不阻塞界面；失败只在控制台留一条日志，不影响应用使用。
+  if (typeof MaintenancePage !== 'undefined') {
+    MaintenancePage.autoSnapshotOnStart();
   }
 
   // 启动时自动导入 base 目录网点数据，完成后弹窗提示

@@ -192,6 +192,18 @@ const MeterStore = {
     this._notifyChange();
   },
 
+  /**
+   * 整表替换（恢复备份用）。
+   * @param {Array} list
+   * @returns {number} 写入条数
+   */
+  replaceAll(list) {
+    const arr = (Array.isArray(list) ? list : []).map(r => this._normalize(r));
+    this._save(arr);
+    this._notifyChange();
+    return arr.length;
+  },
+
   // ==========================================================
   // 从「日戳记录」移植
   // ==========================================================

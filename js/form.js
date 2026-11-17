@@ -7,7 +7,7 @@
  * 功能:
  *   1. 省/市/县三级联动下拉框
  *   2. 机构号根据邮政编码自动生成
- *   3. 戳号动态增删
+ *   3. 戳号动态增删（每把日戳单独选材质，戳号留空 = 无戳号）
  *   4. 邮资机条件字段
  *   5. 风景/文化日戳条件字段 + 动态名称增删
  *   6. 日戳图片上传/编辑/保存（ImageEditor 负责编辑，见 image-editor.js）
@@ -59,7 +59,6 @@ const EntryForm = (function () {
       cancelDateHour: document.getElementById('f-canceldate-hour'),
       stampList:    document.getElementById('f-stamp-list'),
       addStampBtn:  document.getElementById('f-add-stamp'),
-      material:     document.getElementById('f-material'),
       hasMeter:     document.getElementById('f-has-meter'),
       meterFields:  document.getElementById('f-meter-fields'),
       meterModel:   document.getElementById('f-meter-model'),
@@ -77,7 +76,11 @@ const EntryForm = (function () {
       photoInput:   document.getElementById('f-photo-input'),
       photoCount:   document.getElementById('f-photo-count'),
       submitBtn:    document.getElementById('f-submit'),
+      submitContinueBtn: document.getElementById('f-submit-continue'),
       cancelBtn:    document.getElementById('f-cancel'),
+      copyLastBtn:  document.getElementById('f-copy-last'),
+      recentBtn:    document.getElementById('f-recent-office'),
+      recentList:   document.getElementById('f-recent-list'),
       saveId:       document.getElementById('f-save-id'),
     };
     // 缓存原始的区县 select 元素引用
@@ -132,61 +135,26 @@ const EntryForm = (function () {
   }
 
   // ============================================================
-  // 日历弹窗
+  // 日历弹窗（统一组件，见 js/calendar.js）
   // ============================================================
   let _selYear = 0, _selMonth = 0, _selDay = 0;
-
-  function daysInMonth(y, m) { return new Date(y, m, 0).getDate(); }
-
-  function isToday(y, m, d) {
-    const t = new Date();
-    return y === t.getFullYear() && m === t.getMonth() + 1 && d === t.getDate();
-  }
-
-  function isSelected(y, m, d) {
-    return y === _selYear && m === _selMonth && d === _selDay;
-  }
-
-  function renderCalendar(year, month) {
-    dom.calTitle.textContent = `${year}年${String(month).padStart(2, '0')}月`;
-    const firstDow = new Date(year, month - 1, 1).getDay();
-    const days = daysInMonth(year, month);
-    const cells = [];
-    // 空白格
-    for (let i = 0; i < firstDow; i++) cells.push('<span></span>');
-    // 日期格
-    for (let d = 1; d <= days; d++) {
-      const cls = isToday(year, month, d) ? ' cal-today' : '';
-      const sel = isSelected(year, month, d) ? ' cal-sel' : '';
-      cells.push(`<span class="cal-day${cls}${sel}" data-d="${d}">${d}</span>`);
-    }
-    dom.calGrid.innerHTML = cells.join('');
-  }
+  let cal = null;
 
   function openCalendar() {
-    if (!_selYear) { const n = new Date(); _selYear = n.getFullYear(); _selMonth = n.getMonth() + 1; _selDay = n.getDate(); }
-    renderCalendar(_selYear, _selMonth);
-    const rect = dom.dateInput.getBoundingClientRect();
-    // 移至 body 以避开 modal-container 的 transform 影响 fixed 定位
-    document.body.appendChild(dom.calPopup);
-    dom.calPopup.style.left = rect.left + 'px';
-    dom.calPopup.style.top = (rect.bottom + 4) + 'px';
-    dom.calPopup.style.width = Math.max(rect.width, 272) + 'px';
-    dom.calPopup.classList.add('active');
-    dom.dateInput.classList.add('active');
+    if (!cal) return;
+    cal.open({
+      selected: _selYear ? { y: _selYear, m: _selMonth, d: _selDay } : null,
+      anchor: dom.dateInput,
+    });
   }
 
   function closeCalendar() {
-    dom.calPopup.classList.remove('active');
-    dom.dateInput.classList.remove('active');
-    // 移回原位置以便下次打开（如果还在 body 中）
-    if (dom.calPopup.parentNode === document.body) {
-      dom.dateInput.parentNode.appendChild(dom.calPopup);
-    }
+    if (cal) cal.close();
   }
 
   function toggleCalendar() {
-    if (dom.calPopup.classList.contains('active')) closeCalendar();
+    if (!cal) return;
+    if (cal.isOpen()) closeCalendar();
     else openCalendar();
   }
 
@@ -194,7 +162,6 @@ const EntryForm = (function () {
     _selYear = y; _selMonth = m; _selDay = d;
     dom.dateText.textContent = `${y}年${String(m).padStart(2, '0')}月${String(d).padStart(2, '0')}日`;
     dom.dateText.style.color = '#333';
-    closeCalendar();
   }
 
   function populateHourSelect(sel, selected) {
@@ -431,25 +398,99 @@ const EntryForm = (function () {
     return d.innerHTML;
   }
 
+  /** 属性值转义：escHtml 不转引号，值要塞进 value="..." 时必须再处理一次 */
+  function escAttr(s) {
+    return escHtml(String(s == null ? '' : s))
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   // ============================================================
-  // 动态列表: 戳号
+  // 动态列表: 戳号 + 材质（一把日戳一行）
   // ============================================================
-  function addStampRow(value) {
+  function addStampRow(value, material, isDefault) {
     const row = document.createElement('div');
-    row.className = 'dynamic-row';
+    row.className = 'dynamic-row stamp-row';
+    // 新建表单默认带一行：用户没填它、却另外填了别的戳号时，这一行不应变成多余的「无戳号」
+    if (isDefault) row.dataset.defaultRow = '1';
+    const number = value == null ? '' : String(value);
+    const selectedMaterial = material || '';
+    // 旧记录 / 导入数据里可能有不在固定选项里的材质，编辑时保留原值
+    const materialOptions = MATERIAL_OPTIONS.slice();
+    if (selectedMaterial && !materialOptions.includes(selectedMaterial)) {
+      materialOptions.push(selectedMaterial);
+    }
     row.innerHTML = `
-      <input type="text" class="form-input stamp-input" value="${value || ''}" placeholder="如: 1, 2-1, 甲">
+      <input type="text" class="form-input stamp-input" value="${escAttr(number)}" placeholder="戳号（留空=无戳号）">
+      <select class="form-select stamp-material" title="这把日戳的材质">
+        <option value="">材质</option>
+        ${materialOptions.map(m => `<option value="${escAttr(m)}"${m === selectedMaterial ? ' selected' : ''}>${escHtml(m)}</option>`).join('')}
+      </select>
       <button type="button" class="btn-remove" title="删除">×</button>
     `;
-    row.querySelector('.btn-remove').addEventListener('click', () => row.remove());
+    row.querySelector('.btn-remove').addEventListener('click', () => removeStampRow(row));
     dom.stampList.appendChild(row);
+    syncStampRowControls();
     return row;
   }
 
+  /** 删除一行；只剩一行时不允许删除（按钮会置灰，这里再兜一层） */
+  function removeStampRow(row) {
+    if (!row || !row.parentNode) return;
+    if (dom.stampList.querySelectorAll('.stamp-row').length <= 1) return;
+    row.remove();
+    syncStampRowControls();
+  }
+
+  /**
+   * 把「新增戳号」按钮放到最后一行，和戳号 / 材质同一行；
+   * 同时控制删除按钮：只剩一行时置灰，不能把列表减到 0。
+   */
+  function syncStampRowControls() {
+    const rows = Array.from(dom.stampList.querySelectorAll('.stamp-row'));
+    const onlyOne = rows.length <= 1;
+
+    rows.forEach((row) => {
+      const removeBtn = row.querySelector('.btn-remove');
+      if (!removeBtn) return;
+      removeBtn.disabled = onlyOne;
+      removeBtn.title = onlyOne ? '至少保留一把日戳' : '删除';
+    });
+
+    if (dom.addStampBtn && rows.length > 0) {
+      const lastRow = rows[rows.length - 1];
+      // 放在最后一行的末尾：前面各行的删除按钮仍能对齐
+      lastRow.appendChild(dom.addStampBtn);
+    }
+  }
+
+  /**
+   * 表单里的日戳列表。
+   * 戳号留空不是「没填」，而是「无戳号」；完全相同的行只保留一条。
+   */
   function getStampValues() {
-    return Array.from(dom.stampList.querySelectorAll('.stamp-input'))
-      .map(inp => inp.value.trim())
-      .filter(Boolean);
+    const rows = Array.from(dom.stampList.querySelectorAll('.stamp-row')).map((row) => {
+      const rawNumber = row.querySelector('.stamp-input').value.trim();
+      return {
+        number: rawNumber === '无戳号' ? '' : rawNumber,
+        material: row.querySelector('.stamp-material').value,
+        isDefault: row.dataset.defaultRow === '1',
+      };
+    });
+
+    // 默认空行只有在「别的行也没填」时才作为「无戳号」保留
+    const hasOtherContent = rows.some(r => !r.isDefault && (r.number || r.material));
+    const kept = rows.filter(r => !(r.isDefault && !r.number && !r.material && hasOtherContent));
+
+    const seen = new Set();
+    const out = [];
+    kept.forEach((r) => {
+      const key = `${r.number}\u0000${r.material}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push({ number: r.number, material: r.material });
+    });
+    return out;
   }
 
   // ============================================================
@@ -487,7 +528,7 @@ const EntryForm = (function () {
   // ============================================================
   // 日戳图片
   // ============================================================
-  // 图片本身由服务端写到 output/images/<记录ID>/，记录里只存相对路径
+  // 图片本身由服务端写到 images/<记录ID>/（默认在项目根，见 img-export.js），记录里只存相对路径
   // （设计稿第 14 / 15 节：目录由服务端管，渲染层不碰文件系统）。
   //
   // 表单里的图片有两种状态：
@@ -726,6 +767,312 @@ const EntryForm = (function () {
   }
 
   // ============================================================
+  // 草稿（关闭表单 / 刷新页面后仍可恢复）
+  // ============================================================
+  const DRAFT_KEY = 'postmark_entry_draft';
+
+  /** 表单快照：只存可序列化的文本字段，图片文件本身已落盘，不重复存 */
+  function captureFormState() {
+    return {
+      province: dom.province.value,
+      city: dom.city.value,
+      district: getDistrictValue(),
+      postOffice: dom.postOffice.value,
+      postalCode: dom.postalCode.value,
+      instCode: dom.instCode.value,
+      status: dom.status.value,
+      cancelDate: getCancelDateValue(),
+      stamps: getStampValues().map(s => ({ number: s.number, material: s.material })),
+      hasMeter: dom.hasMeter.checked,
+      meterModel: dom.meterModel.value,
+      meterNo: dom.meterNo.value,
+      meterHeader: dom.meterHeader.value,
+      meterLowerRing: dom.meterLower.value,
+      hasScenic: dom.hasScenic.checked,
+      scenicNames: getScenicValues(),
+      notes: dom.notes.value,
+      savedAt: new Date().toISOString(),
+    };
+  }
+
+  /** 有没有值得保存的内容（只有区划 / 邮编 / 日期不算，避免无意义的恢复提示） */
+  function hasDraftContent(state) {
+    if (!state) return false;
+    if (state.postOffice || state.notes) return true;
+    if (Array.isArray(state.stamps) && state.stamps.some(s => s && (s.number || s.material))) return true;
+    if (state.hasMeter || state.meterModel || state.meterNo || state.meterHeader || state.meterLowerRing) return true;
+    if (state.hasScenic || (Array.isArray(state.scenicNames) && state.scenicNames.length > 0)) return true;
+    return false;
+  }
+
+  function saveDraft() {
+    try {
+      const state = captureFormState();
+      if (!hasDraftContent(state)) {
+        localStorage.removeItem(DRAFT_KEY);
+        return;
+      }
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(state));
+    } catch (e) {
+      // 隐私模式 / 配额满：草稿失败不影响正常录入
+    }
+  }
+
+  function loadDraft() {
+    try {
+      const raw = localStorage.getItem(DRAFT_KEY);
+      if (!raw) return null;
+      const state = JSON.parse(raw);
+      return state && typeof state === 'object' ? state : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function clearDraft() {
+    try { localStorage.removeItem(DRAFT_KEY); } catch (e) { /* ignore */ }
+  }
+
+  function draftTimeText(savedAt) {
+    const d = new Date(savedAt || '');
+    if (Number.isNaN(d.getTime())) return '未知时间';
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  /** 把草稿写回表单（新建模式） */
+  function applyFormState(state) {
+    if (!state) return;
+    isEditMode = false;
+    editId = null;
+    dom.saveId.value = '';
+    dom.title.textContent = '录入日戳记录';
+
+    dom.province.value = state.province || '';
+    updateCities();
+    dom.city.value = state.city || '';
+    updateDistricts();
+    setDistrictValue(state.district || '');
+
+    dom.postOffice.value = state.postOffice || '';
+    dom.postalCode.value = state.postalCode || '';
+    dom.instCode.value = state.instCode || '';
+    dom.status.value = state.status || 'open';
+    if (state.cancelDate) setCancelDateValue(state.cancelDate);
+
+    dom.stampList.innerHTML = '';
+    const stamps = Array.isArray(state.stamps) && state.stamps.length
+      ? state.stamps
+      : [{ number: '', material: '' }];
+    stamps.forEach((s, i) => {
+      addStampRow(s.number || '', s.material || '', i === 0 && !s.number && !s.material);
+    });
+
+    dom.hasMeter.checked = Boolean(state.hasMeter);
+    dom.meterModel.value = state.meterModel || '';
+    dom.meterNo.value = state.meterNo || '';
+    dom.meterHeader.value = state.meterHeader || '';
+    dom.meterLower.value = state.meterLowerRing || '';
+    toggleMeterFields();
+
+    dom.hasScenic.checked = Boolean(state.hasScenic);
+    dom.scenicList.innerHTML = '';
+    (Array.isArray(state.scenicNames) ? state.scenicNames : []).forEach(n => addScenicRow(n));
+    toggleScenicFields();
+
+    dom.notes.value = state.notes || '';
+
+    // 草稿里可能只有邮编（机构号还没生成）：补一个，免得恢复后保存被拦
+    const pc = dom.postalCode.value.trim();
+    if (!dom.instCode.value && /^\d{6}$/.test(pc)) {
+      dom.instCode.value = RecordStore.generateInstCode(pc);
+    }
+
+    updatePostalCodeHint();
+  }
+
+  // ============================================================
+  // 保存并继续：保留省 / 市 / 县 / 日期，清掉识别字段
+  // ============================================================
+  function resetForNextRecord() {
+    const keep = {
+      province: dom.province.value,
+      city: dom.city.value,
+      district: getDistrictValue(),
+      postalCode: dom.postalCode.value.trim(),
+      status: dom.status.value,
+      cancelDate: getCancelDateValue(),
+    };
+
+    isEditMode = false;
+    editId = null;
+    dom.saveId.value = '';
+    dom.title.textContent = '录入日戳记录';
+
+    dom.postOffice.value = '';
+    dom.instCode.value = '';
+    dom.stampList.innerHTML = '';
+    addStampRow('', '', true);
+
+    dom.hasMeter.checked = false;
+    dom.meterModel.value = '';
+    dom.meterNo.value = '';
+    dom.meterHeader.value = '';
+    dom.meterLower.value = '';
+    toggleMeterFields();
+
+    dom.hasScenic.checked = false;
+    dom.scenicList.innerHTML = '';
+    toggleScenicFields();
+
+    dom.notes.value = '';
+    resetPhotos();
+
+    // 恢复位置 / 日期；机构号按保留的邮编重新生成，免得留空挡住下一次保存
+    dom.province.value = keep.province;
+    updateCities();
+    dom.city.value = keep.city;
+    updateDistricts();
+    setDistrictValue(keep.district);
+    dom.postalCode.value = keep.postalCode;
+    dom.status.value = keep.status;
+    if (keep.cancelDate) setCancelDateValue(keep.cancelDate);
+    if (/^\d{6}$/.test(keep.postalCode)) {
+      dom.instCode.value = RecordStore.generateInstCode(keep.postalCode);
+    }
+    updatePostalCodeHint();
+
+    dom.postOffice.focus();
+  }
+
+  // ============================================================
+  // 复制上一条
+  // ============================================================
+  function copyLastRecord() {
+    const records = RecordStore.getAll();
+    if (records.length === 0) {
+      Dialog.alert('还没有已保存的记录。');
+      return;
+    }
+    const last = records.slice().sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))[0];
+    populateForm(last);
+
+    // 复制出来的是一张新记录：清掉 id 与图片引用，机构号按邮编重新生成
+    isEditMode = false;
+    editId = null;
+    dom.saveId.value = '';
+    dom.title.textContent = '录入日戳记录（复制自上一条）';
+    setPhotos([]);
+    const pc = dom.postalCode.value.trim();
+    if (/^\d{6}$/.test(pc)) {
+      dom.instCode.value = RecordStore.generateInstCode(pc);
+    }
+
+    dom.postOffice.focus();
+    dom.postOffice.select();
+  }
+
+  // ============================================================
+  // 最近网点
+  // ============================================================
+  function recentOffices(limit) {
+    const seen = new Set();
+    const out = [];
+    const records = RecordStore.getAll()
+      .slice()
+      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+
+    for (const r of records) {
+      const name = String(r.postOffice || '').trim();
+      if (!name) continue;
+      const key = [r.province || '', r.city || '', r.district || '', name].join('\u0000');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(r);
+      if (out.length >= (limit || 20)) break;
+    }
+    return out;
+  }
+
+  function renderRecentList() {
+    if (!dom.recentList) return;
+    const list = recentOffices(20);
+    if (list.length === 0) {
+      dom.recentList.hidden = true;
+      Dialog.alert('还没有已保存的记录。');
+      return;
+    }
+
+    dom.recentList.innerHTML = list.map((r, i) => `
+      <button type="button" class="recent-office-item" data-idx="${i}">
+        <span class="recent-office-name">${escHtml(r.postOffice)}</span>
+        <span class="recent-office-meta">${escHtml([r.province, r.city, r.district].filter(Boolean).join(' / '))}
+          · 机构号 ${escHtml(r.institutionCode || '—')}</span>
+      </button>
+    `).join('');
+
+    dom.recentList.querySelectorAll('[data-idx]').forEach(btn => {
+      btn.addEventListener('click', () => applyRecentOffice(list[Number(btn.dataset.idx)]));
+    });
+    dom.recentList.hidden = false;
+  }
+
+  function applyRecentOffice(record) {
+    if (!record) return;
+    dom.province.value = record.province || '';
+    updateCities();
+    dom.city.value = record.city || '';
+    updateDistricts();
+    setDistrictValue(record.district || '');
+    dom.postOffice.value = record.postOffice || '';
+    dom.postalCode.value = record.postalCode || '';
+    dom.instCode.value = record.institutionCode || '';
+    dom.status.value = record.status || 'open';
+    updatePostalCodeHint();
+    if (dom.recentList) dom.recentList.hidden = true;
+    dom.postOffice.focus();
+  }
+
+  function toggleRecentList() {
+    if (!dom.recentList) return;
+    if (!dom.recentList.hidden) { dom.recentList.hidden = true; return; }
+    renderRecentList();
+  }
+
+  // ============================================================
+  // 同网点：把本次日戳追加到已有记录
+  // ============================================================
+  async function appendStampsToRecord(existing, incoming) {
+    const merged = RecordStore.getStamps(existing).slice();
+    let added = 0;
+
+    (incoming.stamps || []).forEach((s) => {
+      const number = String(s.number || '').trim();
+      const material = String(s.material || '').trim();
+      if (!number && !material) return;
+      if (merged.some(m => m.number === number && m.material === material)) return;
+      merged.push({ number, material });
+      added++;
+    });
+
+    const photos = Array.isArray(existing.photos) ? existing.photos.slice() : [];
+    let photoAdded = 0;
+    (incoming.photos || []).forEach((p) => {
+      if (p && !photos.includes(p)) { photos.push(p); photoAdded++; }
+    });
+
+    RecordStore.update(existing.id, { stamps: merged, photos });
+
+    const head = added > 0
+      ? `已把 ${added} 把日戳追加到「${existing.postOffice}」。`
+      : `「${existing.postOffice}」已有相同的戳号 / 材质，未新增日戳。`;
+    const photoNote = photoAdded > 0 ? `\n同时追加了 ${photoAdded} 张图片。` : '';
+    await Dialog.alert(
+      `${head}${photoNote}\n\n原记录保留盖销日期 ${existing.cancelDate || '—'}；如需改日期请编辑该记录。`
+    );
+  }
+
+  // ============================================================
   // 表单填充 (编辑模式)
   // ============================================================
   function populateForm(record) {
@@ -750,14 +1097,14 @@ const EntryForm = (function () {
     dom.instCode.value = record.institutionCode || '';
     // 兼容新旧日期格式
     setCancelDateValue(record.cancelDate);
-    dom.material.value = record.material || '';
 
-    // 戳号
+    // 戳号 / 材质：旧记录的 stampNumbers + material 由 RecordStore 归一化
     dom.stampList.innerHTML = '';
-    if (record.stampNumbers && record.stampNumbers.length > 0) {
-      record.stampNumbers.forEach(s => addStampRow(s));
+    const stamps = RecordStore.getStamps(record);
+    if (stamps.length > 0) {
+      stamps.forEach(s => addStampRow(s.number, s.material));
     } else {
-      addStampRow('');
+      addStampRow('', '', true);
     }
 
     // 邮资机
@@ -787,6 +1134,15 @@ const EntryForm = (function () {
   // ============================================================
   async function handleSubmit(e) {
     e.preventDefault();
+    await saveEntry(false);
+  }
+
+  /**
+   * 保存一条记录。
+   * @param {boolean} continueNext true = 保存并继续（保留省 / 市 / 县 / 日期，清空邮局与戳号）
+   */
+  async function saveEntry(continueNext) {
+    if (dom.recentList) dom.recentList.hidden = true;
 
     // 基础验证
     const prov = dom.province.value;
@@ -795,6 +1151,7 @@ const EntryForm = (function () {
     const pc = dom.postalCode.value.trim();
     const ic = dom.instCode.value.trim();
     const cd = getCancelDateValue();
+    const stampValues = getStampValues();
 
     if (!prov) { await Dialog.alert('请选择省份'); return; }
     if (!city) { await Dialog.alert('请选择城市'); return; }
@@ -802,6 +1159,7 @@ const EntryForm = (function () {
     if (!pc || !/^\d{6}$/.test(pc)) { await Dialog.alert('请输入有效的6位邮政编码'); return; }
     if (!ic || !/^\d{8}$/.test(ic)) { await Dialog.alert('机构号必须为8位数字'); return; }
     if (!cd || !/^\d{10}$/.test(cd)) { await Dialog.alert('请选择完整的盖销日期和时间'); return; }
+    if (stampValues.length === 0) { await Dialog.alert('请至少保留一把日戳'); return; }
 
     // 还有图片没走完"编辑→保存"：存进记录只会在列表里显示成破图，先问清楚
     if (hasPendingPhotos()) {
@@ -826,8 +1184,7 @@ const EntryForm = (function () {
       institutionCode: ic,
       status: dom.status.value,
       cancelDate: cd,
-      stampNumbers: getStampValues(),
-      material: dom.material.value,
+      stamps: stampValues,
       hasPostageMeter: dom.hasMeter.checked,
       meterModel: dom.hasMeter.checked ? dom.meterModel.value.trim() : '',
       meterNo: dom.hasMeter.checked ? dom.meterNo.value.trim() : '',
@@ -839,11 +1196,58 @@ const EntryForm = (function () {
       notes: dom.notes.value.trim(),
     };
 
+    // 同网点识别：省 + 市 + 县 + 邮局名完全相同
+    if (!isEditMode) {
+      const sameOffice = RecordStore.findSameOffice(record);
+      if (sameOffice.length > 0) {
+        const existing = sameOffice
+          .slice()
+          .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))[0];
+        const loc = [record.province, record.city, record.district].filter(Boolean).join(' / ');
+        const choice = await Dialog.choice(
+          `「${loc} / ${record.postOffice}」已有 ${sameOffice.length} 条记录。\n\n`
+          + `现有：机构号 ${existing.institutionCode || '—'}，`
+          + `盖销 ${existing.cancelDate || '—'}，`
+          + `${RecordStore.formatStamps(existing) || '无戳号'}\n\n`
+          + '请选择处理方式：\n'
+          + '· 追加戳号：把本次填写的日戳并入已有记录（保留原盖销日期）\n'
+          + '· 编辑已有记录：打开已有记录，并把本次戳号带过去\n'
+          + '· 仍然新建：另存为一条新记录',
+          [
+            { value: 'append', label: '追加戳号', primary: true },
+            { value: 'edit', label: '编辑已有记录' },
+            { value: 'new', label: '仍然新建' },
+            { value: 'cancel', label: '取消' },
+          ]
+        );
+        if (!choice || choice === 'cancel') return;
+
+        if (choice === 'append') {
+          await appendStampsToRecord(existing, record);
+          clearDraft();
+          if (continueNext) resetForNextRecord();
+          else closeForm({ skipDraft: true });
+          return;
+        }
+        if (choice === 'edit') {
+          clearDraft();
+          openForm(existing, { extraStamps: record.stamps, extraPhotos: record.photos });
+          return;
+        }
+
+        // 仍然新建：机构号若与已有记录冲突，自动换一个（机构号本来就是邮编 + 随机 + 校验）
+        if (record.institutionCode && RecordStore.getByInstCode(record.institutionCode)) {
+          record.institutionCode = RecordStore.generateInstCode(record.postalCode);
+          dom.instCode.value = record.institutionCode;
+        }
+      }
+    }
+
     // 重复机构号校验
     if (!isEditMode) {
-      const existing = RecordStore.getByInstCode(ic);
+      const existing = RecordStore.getByInstCode(record.institutionCode);
       if (existing) {
-        await Dialog.alert(`机构号 "${ic}" 已存在，请确认邮政编码是否正确`);
+        await Dialog.alert(`机构号 "${record.institutionCode}" 已存在，请确认邮政编码是否正确`);
         return;
       }
     }
@@ -855,7 +1259,13 @@ const EntryForm = (function () {
       RecordStore.add(record);
     }
 
-    closeForm();
+    clearDraft();
+
+    if (continueNext) {
+      resetForNextRecord();
+    } else {
+      closeForm({ skipDraft: true });
+    }
   }
 
   // ============================================================
@@ -870,12 +1280,41 @@ const EntryForm = (function () {
   // ============================================================
   // 开关
   // ============================================================
-  function openForm(record) {
+  /** 编辑模式打开时，把「同网点」流程里当前表单的戳号 / 图片一起带过去 */
+  function applyExtraToForm(options) {
+    const opts = options || {};
+
+    if (Array.isArray(opts.extraStamps) && opts.extraStamps.length > 0) {
+      let merged = getStampValues()
+        .filter(s => s.number || s.material)
+        .map(s => ({ number: s.number, material: s.material }));
+      opts.extraStamps.forEach((s) => {
+        const number = String(s.number || '').trim();
+        const material = String(s.material || '').trim();
+        if (!number && !material) return;
+        if (!merged.some(m => m.number === number && m.material === material)) {
+          merged.push({ number, material });
+        }
+      });
+      if (merged.length === 0) merged = [{ number: '', material: '' }];
+      dom.stampList.innerHTML = '';
+      merged.forEach(s => addStampRow(s.number, s.material, false));
+    }
+
+    if (Array.isArray(opts.extraPhotos) && opts.extraPhotos.length > 0) {
+      const photos = Array.from(new Set([...(photoSaved || []), ...opts.extraPhotos.filter(Boolean)]));
+      setPhotos(photos);
+    }
+  }
+
+  function openForm(record, options) {
+    if (dom.recentList) dom.recentList.hidden = true;
     dom.overlay.classList.add('active');
     document.body.style.overflow = 'hidden';
 
     if (record) {
       populateForm(record);
+      applyExtraToForm(options);
     } else {
       // 新建模式：重置表单
       isEditMode = false;
@@ -886,7 +1325,7 @@ const EntryForm = (function () {
       dom.meterFields.style.display = 'none';
       dom.scenicFields.style.display = 'none';
       dom.stampList.innerHTML = '';
-      addStampRow('');
+      addStampRow('', '', true);
       dom.instCode.value = '';
       resetPhotos();
       // 默认日期为今天，时间为当前小时
@@ -902,12 +1341,39 @@ const EntryForm = (function () {
       resetDistrictToSelect();
       clearSelect(dom.district, '请先选择市');
       dom.district.disabled = true;
+
+      // 上次关闭时留下的草稿：问一次要不要恢复
+      const draft = loadDraft();
+      if (draft && hasDraftContent(draft)) {
+        setTimeout(async () => {
+          if (!dom.overlay.classList.contains('active')) return;
+          const ok = await Dialog.confirm(
+            `发现上次未保存的草稿（保存于 ${draftTimeText(draft.savedAt)}），是否恢复？\n\n`
+            + '选择「取消」会丢弃这份草稿。'
+          );
+          if (ok) applyFormState(draft);
+          else clearDraft();
+        }, 60);
+      }
     }
   }
 
-  function closeForm() {
+  /** 某个独立模态层（图片编辑器 / Dialog）当前是否打开 */
+  function isModalLayerOpen(id) {
+    const el = document.getElementById(id);
+    return Boolean(el && el.classList.contains('active'));
+  }
+
+  function closeForm(options) {
+    const skipDraft = Boolean(options && options.skipDraft);
+    // 新建模式下关闭表单 = 用户可能只是暂时离开：留一份草稿，下次打开可恢复
+    if (!isEditMode && !skipDraft && dom.overlay.classList.contains('active')) {
+      saveDraft();
+    }
+    closeCalendar();
     // 清掉待保存图片的 objectURL，避免长时间占用内存
     resetPhotos();
+    if (dom.recentList) dom.recentList.hidden = true;
     dom.overlay.classList.remove('active');
     document.body.style.overflow = '';
   }
@@ -922,9 +1388,6 @@ const EntryForm = (function () {
     const provs = PostmarkData.getAllProvinces();
     populateSelect(dom.province, provs.map(p => p.name), '请选择省份');
 
-    // 材质下拉
-    populateSelect(dom.material, MATERIAL_OPTIONS, '请选择材质');
-
     // 日历默认今天 + 小时下拉
     const now = new Date();
     _selYear = now.getFullYear(); _selMonth = now.getMonth() + 1; _selDay = now.getDate();
@@ -932,8 +1395,20 @@ const EntryForm = (function () {
     dom.dateText.style.color = '#333';
     populateHourSelect(dom.cancelDateHour, String(now.getHours()).padStart(2, '0'));
 
-    // 默认添加一行戳号
-    addStampRow('');
+    // 日历组件（独立测试页可能没有加载 calendar.js，此时只保留日期默认值）
+    if (typeof CalendarPopup !== 'undefined' && CalendarPopup && CalendarPopup.create) {
+      cal = CalendarPopup.create({
+        popup: dom.calPopup,
+        title: dom.calTitle,
+        grid: dom.calGrid,
+        prev: dom.calPrev,
+        next: dom.calNext,
+        onPick: selectDate,
+      });
+    }
+
+    // 默认添加一行戳号（留空即「无戳号」）
+    addStampRow('', '', true);
 
     // ---- 事件绑定 ----
 
@@ -973,29 +1448,11 @@ const EntryForm = (function () {
       if (query.length >= 2) poSearchByName(query);
     });
 
-    // 日历弹窗：点击输入框切换
+    // 日历弹窗：点击输入框切换（翻月 / 年历切换由组件内部处理）
     dom.dateInput.addEventListener('click', toggleCalendar);
 
-    // 日历导航
-    dom.calPrev.addEventListener('click', (e) => { e.stopPropagation(); _selMonth--; if (_selMonth < 1) { _selMonth = 12; _selYear--; } renderCalendar(_selYear, _selMonth); });
-    dom.calNext.addEventListener('click', (e) => { e.stopPropagation(); _selMonth++; if (_selMonth > 12) { _selMonth = 1; _selYear++; } renderCalendar(_selYear, _selMonth); });
-
-    // 日期点击
-    dom.calGrid.addEventListener('click', (e) => {
-      const cell = e.target.closest('.cal-day');
-      if (!cell) return;
-      selectDate(_selYear, _selMonth, parseInt(cell.dataset.d, 10));
-    });
-
-    // 点击外部关闭日历
-    document.addEventListener('click', (e) => {
-      if (dom.calPopup.classList.contains('active') && !dom.dateInput.contains(e.target) && !dom.calPopup.contains(e.target)) {
-        closeCalendar();
-      }
-    });
-
     // 添加戳号
-    dom.addStampBtn.addEventListener('click', () => addStampRow(''));
+    dom.addStampBtn.addEventListener('click', () => addStampRow('', ''));
 
     // 邮资机条件切换
     dom.hasMeter.addEventListener('change', toggleMeterFields);
@@ -1038,22 +1495,59 @@ const EntryForm = (function () {
       });
     }
 
-    // 提交
+    // 提交 / 保存并继续
     dom.form.addEventListener('submit', handleSubmit);
+    if (dom.submitContinueBtn) {
+      dom.submitContinueBtn.addEventListener('click', () => saveEntry(true));
+    }
 
     // 取消
     dom.cancelBtn.addEventListener('click', closeForm);
+
+    // 快捷：复制上一条 / 最近网点
+    if (dom.copyLastBtn) dom.copyLastBtn.addEventListener('click', copyLastRecord);
+    if (dom.recentBtn) {
+      dom.recentBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleRecentList();
+      });
+    }
+    document.addEventListener('click', (e) => {
+      if (!dom.recentList || dom.recentList.hidden) return;
+      if (dom.recentList.contains(e.target) || (dom.recentBtn && dom.recentBtn.contains(e.target))) return;
+      dom.recentList.hidden = true;
+    });
 
     // 点击遮罩关闭
     dom.overlay.addEventListener('click', (e) => {
       if (e.target === dom.overlay) closeForm();
     });
 
-    // 键盘 ESC 关闭
+    // 页面刷新 / 关闭窗口前留一份草稿
+    window.addEventListener('beforeunload', () => {
+      if (!isEditMode && dom.overlay && dom.overlay.classList.contains('active')) saveDraft();
+    });
+
+    // 快捷键：Ctrl/Cmd+S 保存；Esc 关闭（图片编辑器 / 对话框优先）
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && dom.overlay.classList.contains('active')) {
-        closeForm();
+      if (!dom.overlay.classList.contains('active')) return;
+      if (isModalLayerOpen('image-editor-overlay') || isModalLayerOpen('dialog-overlay')) return;
+
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && String(e.key).toLowerCase() === 's') {
+        e.preventDefault();
+        saveEntry(false);
+        return;
       }
+
+      if (e.key !== 'Escape') return;
+
+      // 最近网点列表展开时，Esc 先收起它
+      if (dom.recentList && !dom.recentList.hidden) {
+        dom.recentList.hidden = true;
+        return;
+      }
+
+      closeForm();
     });
   }
 

@@ -7,6 +7,8 @@
  *
  *   resources/node/node.exe      随包分发的 Node 运行时（用户无需自己装 Node）
  *   resources/app/server.js      本地 HTTP 服务器入口
+ *   resources/app/backup.js      整包备份 / 恢复 / 自动快照
+ *   resources/app/zip-lite.js    备份包用到的 ZIP 读写（无第三方依赖）
  *   resources/app/crawler-*.js   爬虫引擎与匹配逻辑
  *   resources/app/uprins.js      UPRINS 扫码链接解析
  *   resources/app/index.html     前端
@@ -40,6 +42,8 @@ const APP_FILES = [
   'crawler-match.js',
   'crawler-intelligent.js',
   'img-export.js',
+  'backup.js',
+  'zip-lite.js',
   'uprins.js',
   'index.html',
   'txt_compare.exe',

@@ -35,9 +35,10 @@
 
   /** 四个时间字段的当前值（''=未填），提交时一并入库 */
   let dates = { sendDate: '', arriveDate: '', returnDate: '', recoverDate: '' };
-  /** 日历面板正在编辑的字段（key）与显示的年月 */
+  /** 日历面板正在编辑的字段（key） */
   let activeDateKey = 'sendDate';
-  let calY = 0, calM = 0;
+  /** 统一日历组件实例 */
+  let cal = null;
 
   /** 邮路草稿（与表单里的途经点行双向同步） */
   let routeDraft = { nodes: [], legs: [] };
@@ -54,6 +55,7 @@
       sortDirBtn: $('btn-return-sort-dir'),
       addBtn: $('btn-return-add'),
       exportBtn: $('btn-return-export'),
+      exportExcelBtn: $('btn-return-export-excel'),
       importBtn: $('btn-return-import'),
       importFile: $('f-return-import-file'),
       tbody: $('return-tbody'),
@@ -280,51 +282,20 @@
   }
 
   // ============================================================
-  // 时间字段：与「录入日戳」同款日历弹窗，一个面板服务四个字段
+  // 时间字段：统一日历组件（js/calendar.js），一个面板服务四个字段
   // ============================================================
-  function renderCalendar() {
-    els.calLabel.textContent = DATE_LABELS[activeDateKey] || '';
-    els.calTitle.textContent = `${calY}年${pad2(calM)}月`;
-    const firstDow = new Date(calY, calM - 1, 1).getDay();
-    const days = new Date(calY, calM, 0).getDate();
-    const now = new Date();
-    const cur = dates[activeDateKey];
-    const cells = [];
-    for (let i = 0; i < firstDow; i++) cells.push('<span></span>');
-    for (let d = 1; d <= days; d++) {
-      const isToday = calY === now.getFullYear() && calM === now.getMonth() + 1 && d === now.getDate();
-      const isSel = cur === `${calY}-${pad2(calM)}-${pad2(d)}`;
-      const cls = (isToday ? ' cal-today' : '') + (isSel ? ' cal-sel' : '');
-      cells.push(`<span class="cal-day${cls}" data-d="${d}">${d}</span>`);
-    }
-    els.calGrid.innerHTML = cells.join('');
-  }
-
-  /** 日历面板挂到 body：modal-container 有 transform，会让 fixed 定位失效 */
   function openCalendar(field, inputEl) {
     activeDateKey = field;
+    if (!cal) return;
     const cur = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dates[field] || '');
-    const now = new Date();
-    calY = cur ? +cur[1] : now.getFullYear();
-    calM = cur ? +cur[2] : now.getMonth() + 1;
-    renderCalendar();
-
-    const rect = inputEl.getBoundingClientRect();
-    document.body.appendChild(els.calPopup);
-    els.calPopup.style.left = Math.min(rect.left, window.innerWidth - 300) + 'px';
-    els.calPopup.style.top = Math.min(rect.bottom + 4, window.innerHeight - 360) + 'px';
-    els.calPopup.style.width = Math.max(rect.width, 272) + 'px';
-    els.calPopup.classList.add('active');
-    inputEl.classList.add('active');
+    cal.open({
+      selected: cur ? { y: +cur[1], m: +cur[2], d: +cur[3] } : null,
+      anchor: inputEl,
+    });
   }
 
   function closeCalendar() {
-    if (!els) return;
-    els.calPopup.classList.remove('active');
-    els.dateInputs.forEach(d => d.classList.remove('active'));
-    // 放回表单里，避免一直挂在 body 上
-    const holder = $('mr-cal-holder');
-    if (holder && els.calPopup.parentNode !== holder) holder.appendChild(els.calPopup);
+    if (cal) cal.close();
   }
 
   /** 写入某个时间字段（''=清空） */
@@ -630,6 +601,34 @@
     URL.revokeObjectURL(url);
   }
 
+  /** Excel 导出：与邮件列表同一套 ExportUtils，列名用中文，邮路合并成一句话 */
+  function handleExportExcel() {
+    const data = ReturnStore.getAll();
+    if (data.length === 0) { Dialog.alert('暂无数据可导出'); return; }
+    if (typeof ExportUtils === 'undefined') { Dialog.alert('导出组件未加载，请刷新页面'); return; }
+    try {
+      const headers = [
+        '寄达国家（地区）', '英文名', '二字代码', '寄出方式', '邮件号码',
+        '寄出时间', '寄达时间', '返回时间', '收回时间',
+        '境外接收互换局', '境外出口互换局', '邮路', '备注', '录入时间',
+      ];
+      const rows = data.map(r => [
+        r.countryZh || '', r.countryEn || '', r.countryCode || '', r.sendMethod || '', r.mailNo || '',
+        r.sendDate || '', r.arriveDate || '', r.returnDate || '', r.recoverDate || '',
+        r.acceptOffice || '', r.exportOffice || '',
+        ReturnStore.routeSummary(r.route) || '', r.notes || '', r.createdAt || '',
+      ]);
+      ExportUtils.downloadXlsx(
+        `国际退信-${ExportUtils.fileDate()}.xlsx`,
+        '国际退信',
+        headers,
+        rows
+      );
+    } catch (e) {
+      Dialog.alert('导出 Excel 失败: ' + e.message);
+    }
+  }
+
   function handleImportFile(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -662,6 +661,22 @@
     cacheEls();
     if (!els.card) return;
 
+    if (typeof CalendarPopup !== 'undefined' && CalendarPopup && CalendarPopup.create) {
+      cal = CalendarPopup.create({
+        popup: els.calPopup,
+        title: els.calTitle,
+        grid: els.calGrid,
+        prev: els.calPrev,
+        next: els.calNext,
+        onOpen: () => {
+          els.calLabel.textContent = DATE_LABELS[activeDateKey] || '';
+        },
+        onPick: (y, m, d) => {
+          setDate(activeDateKey, `${y}-${pad2(m)}-${pad2(d)}`);
+        },
+      });
+    }
+
     loadSortPref();
     renderSortUI();
 
@@ -683,6 +698,7 @@
 
     els.addBtn.addEventListener('click', () => openForm(null));
     els.exportBtn.addEventListener('click', handleExport);
+    if (els.exportExcelBtn) els.exportExcelBtn.addEventListener('click', handleExportExcel);
     els.importBtn.addEventListener('click', () => els.importFile.click());
     els.importFile.addEventListener('change', handleImportFile);
 
@@ -698,25 +714,9 @@
       if (e.target === els.detailOverlay) closeDetail();
     });
 
-    // 时间字段：点哪个框，日历就编辑哪个字段
+    // 时间字段：点哪个框，日历就编辑哪个字段（翻月 / 年历切换由组件处理）
     els.dateInputs.forEach(d => {
       d.addEventListener('click', () => openCalendar(d.dataset.field, d));
-    });
-    els.calPrev.addEventListener('click', (e) => {
-      e.stopPropagation();
-      calM--; if (calM < 1) { calM = 12; calY--; }
-      renderCalendar();
-    });
-    els.calNext.addEventListener('click', (e) => {
-      e.stopPropagation();
-      calM++; if (calM > 12) { calM = 1; calY++; }
-      renderCalendar();
-    });
-    els.calGrid.addEventListener('click', (e) => {
-      const cell = e.target.closest('.cal-day');
-      if (!cell) return;
-      setDate(activeDateKey, `${calY}-${pad2(calM)}-${pad2(parseInt(cell.dataset.d, 10))}`);
-      closeCalendar();
     });
     els.calToday.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -727,12 +727,6 @@
     els.calClear.addEventListener('click', (e) => {
       e.stopPropagation();
       setDate(activeDateKey, '');
-      closeCalendar();
-    });
-    document.addEventListener('click', (e) => {
-      if (!els.calPopup.classList.contains('active')) return;
-      if (els.calPopup.contains(e.target)) return;
-      if (els.dateInputs.some(d => d.contains(e.target))) return;
       closeCalendar();
     });
 

@@ -445,7 +445,9 @@ const ImageEditor = (function () {
     dom.cropBox.addEventListener('pointerdown', onCropPointerDown);
 
     // ---- 快捷键 ----
-    document.addEventListener('keydown', onKeyDown);
+    // 用捕获阶段：编辑器 overlay 上还有一层 stopPropagation（防止 Esc 冒泡到录入表单），
+    // 若监听在冒泡阶段，焦点在编辑器内部时 Esc / Ctrl+Z 会先被那层拦掉，等于失效。
+    document.addEventListener('keydown', onKeyDown, true);
 
     // 窗口尺寸变化时重新适配预览
     window.addEventListener('resize', () => { if (session) scheduleRender(); });
@@ -483,8 +485,26 @@ const ImageEditor = (function () {
     });
   }
 
+  /**
+   * 是否有编辑器之外的对话框正开着（自定义 Dialog / 重名确认）。
+   *
+   * 保存成功 / 失败提示、关闭确认都走 Dialog，而 Dialog 的按键监听是
+   * 挂在 document 上的。若编辑器也响应同一个 Esc，会出现「对话框还没关，
+   * 编辑器先 close(false)」——图片文件已落盘，但 open() 返回 null，
+   * 表单拿不到 relPath，最终记录里没有这张图。
+   */
+  function isDialogOpen() {
+    const d = document.getElementById('dialog-overlay');
+    if (d && d.classList.contains('active')) return true;
+    // 重名确认是编辑器自己的临时模态层（.ie-conflict-overlay），
+    // 它的 Esc 处理器也在 document 上，必须让它先收到按键。
+    return Boolean(document.querySelector('.ie-conflict-overlay'));
+  }
+
   function onKeyDown(e) {
     if (!dom || !dom.overlay.classList.contains('active')) return;
+    // 对话框优先处理按键；不要让它背后的编辑器同时响应
+    if (isDialogOpen()) return;
 
     if (e.key === 'Escape') {
       e.preventDefault();
@@ -1040,7 +1060,11 @@ const ImageEditor = (function () {
   /** 图片子目录 = 记录 ID；没有记录时落到 _unfiled */
   function subdir() {
     const f = dom.form || {};
-    return f.recordId || (typeof ImgNaming !== 'undefined' ? ImgNaming.UNFILED_DIR : '_unfiled');
+    // dom.recordId 由 open() 从 ctx.recordId 写入，是表单当前记录 ID 的唯一来源。
+    // 只读 f.recordId 会永远拿不到值：ctx.record 是表单草稿（机构号/日期/邮局名），
+    // 并不包含 recordId，结果所有图片都被写进 _unfiled。
+    return dom.recordId || f.recordId || f.id
+      || (typeof ImgNaming !== 'undefined' ? ImgNaming.UNFILED_DIR : '_unfiled');
   }
 
   // ---- HTTP ----
@@ -1200,6 +1224,7 @@ const ImageEditor = (function () {
   async function requestClose() {
     if (!dom || !dom.overlay.classList.contains('active')) return;
     if (busy) return;
+    if (isDialogOpen()) return;
 
     if (dirty) {
       const go = await Dialog.confirm('图片尚未保存，确定退出吗？\n\n选择「确定」放弃修改，选择「取消」继续编辑。');

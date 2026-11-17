@@ -8,9 +8,9 @@
  * 页面容器: #statistics-page
  * 由 app.js 在进入 / 离开页面时调用 show() / hide()，数据变化时调用 refresh()。
  *
- * 图表使用 ECharts 5，全部按需初始化：只有进入页面后才创建实例，
- * 避免隐藏状态下容器宽高为 0 导致图表尺寸错误。
- * 图表之外，页面下半部分用区县 / 戳号 / 月度 / 网点四张表细化上海市数据。
+ * 图表使用 ECharts 5，全部按需初始化；统计页按「总览 / 日戳与机戳 / 邮件与退信 / 分省」
+ * 四个维度分页展示，只有进入页面后才创建实例，切换分页时再校正图表尺寸。
+ * 分省页用下拉框选择省份，以 4 张省级图表 + 4 张明细表细化展示。
  */
 
 const StatisticsPage = (function () {
@@ -19,6 +19,11 @@ const StatisticsPage = (function () {
   const charts = {};
   let visible = false;
   let lastData = null;
+  let selectedProvince = '';
+  let activeStatTab = 'overview';
+
+  /** 直辖市和港澳在参考数据里 cities 存的是区县，其余省份存的是地市 */
+  const MUNICIPALITY_SHORT = new Set(['北京', '天津', '上海', '重庆', '香港', '澳门']);
 
   const PALETTE = [
     '#00991A', '#66bb6a', '#26a69a', '#42a5f5',
@@ -27,6 +32,7 @@ const StatisticsPage = (function () {
 
   const RECORD_STATUS = [
     { key: 'open',      label: '营业',     color: '#00991A' },
+    { key: 'delivery',  label: '投递部',   color: '#5c6bc0' },
     { key: 'themed',    label: '主题邮局', color: '#26a69a' },
     { key: 'temporary', label: '临时邮局', color: '#ffa726' },
     { key: 'closed',    label: '已撤销',   color: '#b0bec5' },
@@ -143,11 +149,22 @@ const StatisticsPage = (function () {
     }[ch]));
   }
 
-  /** 一条记录里的戳号：去空、去重；没有任何有效戳号时返回空数组 */
-  function getRecordStamps(record) {
+  /** 一条记录里的日戳明细：{ number, material }；number 为空串表示「无戳号」 */
+  function getRecordStampsDetailed(record) {
+    if (typeof RecordStore !== 'undefined' && typeof RecordStore.getStamps === 'function') {
+      return RecordStore.getStamps(record);
+    }
     const raw = record && record.stampNumbers;
     const list = Array.isArray(raw) ? raw : (clean(raw) ? [raw] : []);
-    return Array.from(new Set(list.map(clean).filter(Boolean)));
+    return list
+      .map(n => ({ number: clean(n), material: clean(record && record.material) }))
+      .filter(s => s.number || s.material);
+  }
+
+  /** 一条记录里的戳号：去重；空白计为「无戳号」 */
+  function getRecordStamps(record) {
+    const labels = getRecordStampsDetailed(record).map(s => clean(s.number) || '无戳号');
+    return Array.from(new Set(labels));
   }
 
   /** 国际退信当前阶段：取已填写的最远节点 */
@@ -179,6 +196,7 @@ const StatisticsPage = (function () {
   }
 
   /** 从最早的月份补到最晚的月份；超过 maxMonths 时只保留最近一段 */
+  /** 从最早的月份补到最晚的月份；超过 maxMonths 时只保留最近一段 */
   function buildMonthRange(keys, maxMonths) {
     if (!keys.length) return [];
     const sorted = keys.slice().sort();
@@ -201,6 +219,30 @@ const StatisticsPage = (function () {
     }
 
     return out.length > maxMonths ? out.slice(out.length - maxMonths) : out;
+  }
+
+  /** 固定生成截至当前月份的 count 个月；没有日期数据时返回空数组 */
+  function buildCurrentMonthRange(keys, count) {
+    if (!keys.length) return [];
+
+    const now = new Date();
+    let y = now.getFullYear();
+    let m = now.getMonth() + 1 - (count - 1);
+    while (m <= 0) {
+      m += 12;
+      y--;
+    }
+
+    const out = [];
+    for (let i = 0; i < count; i++) {
+      out.push(`${y}-${pad2(m)}`);
+      m++;
+      if (m > 12) {
+        m = 1;
+        y++;
+      }
+    }
+    return out;
   }
 
   function gradient(x1, y1, x2, y2, from, to) {
@@ -313,13 +355,21 @@ const StatisticsPage = (function () {
       // 与首页排名口径一致：完成率只统计营业中、且填了省份的网点
       if (r.status === 'open' && province !== '未填写') openRecords++;
 
-      const material = clean(r.material) || '未填写';
-      materialCount.set(material, (materialCount.get(material) || 0) + 1);
-
-      const stamps = getRecordStamps(r);
-      if (stamps.length) {
-        stamps.forEach(s => stampCount.set(s, (stampCount.get(s) || 0) + 1));
+      // 材质与戳号绑定：按「把」统计，一把日戳一个材质
+      const stampDetails = getRecordStampsDetailed(r);
+      if (stampDetails.length) {
+        const seenStamp = new Set();
+        stampDetails.forEach((s) => {
+          const label = clean(s.number) || '无戳号';
+          if (!seenStamp.has(label)) {
+            seenStamp.add(label);
+            stampCount.set(label, (stampCount.get(label) || 0) + 1);
+          }
+          const material = clean(s.material) || '未填写';
+          materialCount.set(material, (materialCount.get(material) || 0) + 1);
+        });
       } else {
+        materialCount.set('未填写', (materialCount.get('未填写') || 0) + 1);
         stampCount.set('无戳号', (stampCount.get('无戳号') || 0) + 1);
       }
 
@@ -427,10 +477,24 @@ const StatisticsPage = (function () {
     setText('stat-kpi-mails-sub',
       `待发 ${fmtNum(pending)} · 在途 ${fmtNum(transit)} · 妥收 ${fmtNum(delivered)}`);
 
-    const receivedReturns = data.returnStageCount.get('received') || 0;
+    // 寄达 / 返回 / 收到：按「该时间已填」计件 —— 一件寄达过就算寄达，
+    // 不因后来又收回而不计（环形图是「当前所处阶段」，两处口径不同，见副标题 title）
+    let arrivedReturns = 0;
+    let returnedReturns = 0;
+    let receivedReturns = 0;
+    data.returns.forEach((r) => {
+      if (!r || typeof r !== 'object') return;
+      if (parseDate(r.arriveDate)) arrivedReturns++;
+      if (parseDate(r.returnDate)) returnedReturns++;
+      if (parseDate(r.recoverDate)) receivedReturns++;
+    });
     setText('stat-kpi-returns', fmtNum(data.returns.length));
     setText('stat-kpi-returns-sub',
-      `收到 ${fmtNum(receivedReturns)} 件 · 涉及 ${fmtNum(data.returnCountries.size)} 个国家/地区`);
+      `寄达 ${fmtNum(arrivedReturns)} · 返回 ${fmtNum(returnedReturns)} · 收到 ${fmtNum(receivedReturns)} 件 · 涉及 ${fmtNum(data.returnCountries.size)} 个国家/地区`);
+    const returnSub = $('stat-kpi-returns-sub');
+    if (returnSub) {
+      returnSub.title = '寄达 / 返回 / 收到 按「已填该时间」计件；右侧环形图按「最远已填节点」分段';
+    }
 
     setText('stat-kpi-scenic', fmtNum(data.scenicTotal));
     setText('stat-kpi-scenic-sub', `来自 ${fmtNum(data.scenicRecords)} 条记录`);
@@ -674,7 +738,7 @@ const StatisticsPage = (function () {
   }
 
   // ============================================================
-  // 邮局状态构成（环形图）
+  // 邮局类型/状态构成（环形图）
   // ============================================================
   function renderStatus(data) {
     const items = RECORD_STATUS
@@ -738,7 +802,7 @@ const StatisticsPage = (function () {
     const entries = Array.from(data.materialCount.entries())
       .sort((a, b) => b[1] - a[1]);
 
-    setText('stat-material-note', entries.length ? `${entries.length} 类` : '');
+    setText('stat-material-note', entries.length ? `${entries.length} 类 · 按日戳把数` : '');
 
     if (!entries.length) {
       setChart('material', emptyOption('暂无材质数据'));
@@ -756,7 +820,7 @@ const StatisticsPage = (function () {
         trigger: 'item',
         renderMode: 'richText',
         confine: true,
-        formatter: '{b}: {c} 条 ({d}%)',
+        formatter: '{b}: {c} 把 ({d}%)',
       },
       legend: {
         bottom: 0,
@@ -1124,25 +1188,385 @@ const StatisticsPage = (function () {
   }
 
   // ============================================================
-  // 上海市细化（区县 / 戳号 / 月度 / 网点）
+  // 分省数据（下拉选择省份；图表 + 明细表）
   // ============================================================
-  function renderShanghai(data) {
-    const shRecords = (data.records || []).filter(r => r && shortProvince(r.province) === '上海');
-    const shMeters = (data.meters || []).filter(m => m && shortProvince(m.province) === '上海');
-    const hasShanghai = shRecords.length > 0 || shMeters.length > 0;
+  function findProvinceByShort(shortName) {
+    try {
+      if (typeof PostmarkData !== 'undefined' && typeof PostmarkData.getAllProvinces === 'function') {
+        return (PostmarkData.getAllProvinces() || [])
+          .find(p => shortProvince(p.name) === shortName) || null;
+      }
+    } catch (e) { /* 参考数据不可用时按记录里的省名显示 */ }
+    return null;
+  }
+
+  function recordAreaName(record, isMunicipality) {
+    const city = clean(record && record.city);
+    const district = clean(record && record.district);
+    if (isMunicipality) return district || city || '未填写';
+    return city || district || '未填写';
+  }
+
+  function recordRegionName(record, isMunicipality) {
+    const city = clean(record && record.city);
+    const district = clean(record && record.district);
+    if (isMunicipality) return district || city || '未填写';
+    return [city, district].filter(Boolean).join(' / ') || '未填写';
+  }
+
+  function buildProvinceOptions(data) {
+    const map = new Map();
+    function add(province, key) {
+      const short = shortProvince(province);
+      if (!short || short === '未填写') return;
+      let item = map.get(short);
+      if (!item) {
+        const full = findProvinceByShort(short);
+        item = { short, full: full ? full.name : short, records: 0, meters: 0 };
+        map.set(short, item);
+      }
+      item[key]++;
+    }
+    (data.records || []).forEach(r => add(r && r.province, 'records'));
+    (data.meters || []).forEach(m => add(m && m.province, 'meters'));
+    return Array.from(map.values()).sort((a, b) =>
+      b.records - a.records
+      || b.meters - a.meters
+      || a.full.localeCompare(b.full, 'zh-Hans-CN'));
+  }
+
+  function renderProvinceEmpty() {
+    setText('stat-prov-records', '0');
+    setText('stat-prov-areas', '0');
+    setText('stat-prov-meters', '0');
+    setText('stat-prov-photos', '0');
+    setText('stat-prov-note', '暂无分省数据');
+    [
+      'stat-prov-district-note', 'stat-prov-trend-note',
+      'stat-prov-status-note', 'stat-prov-stamp-chart-note',
+      'stat-prov-area-note', 'stat-prov-stamp-note',
+      'stat-prov-month-note', 'stat-prov-office-note',
+    ].forEach(id => setText(id, ''));
+
+    ['prov-district', 'prov-trend', 'prov-status', 'prov-stamp'].forEach((key) => {
+      setChart(key, emptyOption('暂无分省数据'));
+    });
+
+    const areaBody = $('stat-prov-area-body');
+    if (areaBody) areaBody.innerHTML = tableEmptyRow(12, '暂无分省数据');
+    const stampBody = $('stat-prov-stamp-body');
+    if (stampBody) stampBody.innerHTML = tableEmptyRow(5, '暂无分省数据');
+    const monthBody = $('stat-prov-month-body');
+    if (monthBody) monthBody.innerHTML = tableEmptyRow(5, '暂无分省数据');
+    const officeBody = $('stat-prov-office-body');
+    if (officeBody) officeBody.innerHTML = tableEmptyRow(9, '暂无分省数据');
+  }
+
+  function renderProvinceDistrictChart(rows) {
+    const entries = rows
+      .filter(r => r.records > 0)
+      .sort((a, b) => b.records - a.records
+        || a.name.localeCompare(b.name, 'zh-Hans-CN'))
+      .slice(0, 12);
+
+    setText('stat-prov-district-note', entries.length
+      ? `按日戳记录 · Top ${entries.length}`
+      : '');
+
+    if (!entries.length) {
+      setChart('prov-district', emptyOption('暂无日戳记录'));
+      return;
+    }
+
+    const names = entries.map(e => e.name).reverse();
+    const values = entries.map(e => e.records).reverse();
+    const max = Math.max(...values, 1);
+
+    setChart('prov-district', {
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+        renderMode: 'richText',
+        confine: true,
+      },
+      grid: { left: 96, right: 56, top: 10, bottom: 18 },
+      xAxis: {
+        type: 'value',
+        min: 0,
+        max: Math.max(1, Math.ceil(max * 1.18)),
+        axisLine: { show: false },
+        axisTick: { show: false },
+        axisLabel: { color: '#999', fontSize: 11 },
+        splitLine: { lineStyle: { color: '#f2f2f2' } },
+      },
+      yAxis: {
+        type: 'category',
+        data: names,
+        axisLine: { show: false },
+        axisTick: { show: false },
+        axisLabel: {
+          color: '#555',
+          fontSize: 12,
+          formatter: (v) => truncate(v, 10),
+        },
+      },
+      series: [{
+        name: '日戳记录',
+        type: 'bar',
+        data: values,
+        barMaxWidth: 14,
+        itemStyle: {
+          borderRadius: [0, 4, 4, 0],
+          color: gradient(0, 0, 1, 0, '#66bb6a', '#1b5e20'),
+        },
+        label: { show: true, position: 'right', color: '#666', fontSize: 11 },
+      }],
+    });
+  }
+
+  function renderProvinceTrendChart(range, monthMap) {
+    setText('stat-prov-trend-note', range.length
+      ? `最近 ${range.length} 个月`
+      : '');
+
+    if (!range.length) {
+      setChart('prov-trend', emptyOption('暂无带日期的记录'));
+      return;
+    }
+
+    const labels = range.map(k => k.slice(2).replace('-', '/'));
+    const records = range.map(k => (monthMap.get(k) || {}).records || 0);
+    const meters = range.map(k => (monthMap.get(k) || {}).meters || 0);
+    const rotate = range.length > 10 ? 35 : 0;
+
+    setChart('prov-trend', {
+      tooltip: {
+        trigger: 'axis',
+        renderMode: 'richText',
+        confine: true,
+      },
+      legend: {
+        top: 0,
+        right: 0,
+        itemWidth: 10,
+        itemHeight: 10,
+        textStyle: { color: '#666', fontSize: 11 },
+      },
+      grid: { left: 40, right: 16, top: 36, bottom: rotate ? 44 : 30 },
+      xAxis: {
+        type: 'category',
+        data: labels,
+        boundaryGap: false,
+        axisLine: { lineStyle: { color: '#eee' } },
+        axisTick: { show: false },
+        axisLabel: {
+          color: '#999',
+          fontSize: 10,
+          interval: range.length > 12 ? 'auto' : 0,
+          rotate,
+          hideOverlap: true,
+        },
+      },
+      yAxis: {
+        type: 'value',
+        minInterval: 1,
+        axisLine: { show: false },
+        axisTick: { show: false },
+        axisLabel: { color: '#999', fontSize: 11 },
+        splitLine: { lineStyle: { color: '#f2f2f2' } },
+      },
+      series: [
+        {
+          name: '日戳',
+          type: 'line',
+          smooth: true,
+          showSymbol: range.length <= 24,
+          symbol: 'circle',
+          symbolSize: 5,
+          data: records,
+          lineStyle: { color: '#00991A', width: 2 },
+          itemStyle: { color: '#00991A' },
+          areaStyle: { color: 'rgba(0, 153, 26, .10)' },
+        },
+        {
+          name: '邮资机',
+          type: 'line',
+          smooth: true,
+          showSymbol: range.length <= 24,
+          symbol: 'circle',
+          symbolSize: 5,
+          data: meters,
+          lineStyle: { color: '#42a5f5', width: 2 },
+          itemStyle: { color: '#42a5f5' },
+        },
+      ],
+    });
+  }
+
+  function renderProvinceStatusChart(records) {
+    const counts = new Map();
+    records.forEach((r) => {
+      const key = recordStatusKey(r);
+      counts.set(key, (counts.get(key) || 0) + 1);
+    });
+
+    const total = records.length;
+    const items = RECORD_STATUS
+      .map(s => ({
+        name: s.label,
+        value: counts.get(s.key) || 0,
+        itemStyle: { color: s.color },
+      }))
+      .filter(d => d.value > 0);
+
+    setText('stat-prov-status-note', total ? `共 ${fmtNum(total)} 条` : '');
+
+    if (!items.length) {
+      setChart('prov-status', emptyOption('暂无日戳记录'));
+      return;
+    }
+
+    setChart('prov-status', {
+      tooltip: {
+        trigger: 'item',
+        renderMode: 'richText',
+        confine: true,
+        formatter: '{b}: {c} 条 ({d}%)',
+      },
+      title: {
+        text: fmtNum(total),
+        subtext: '条记录',
+        left: 'center',
+        top: '34%',
+        textAlign: 'center',
+        textStyle: { fontSize: 20, color: '#333', fontWeight: 700 },
+        subtextStyle: { fontSize: 11, color: '#999' },
+      },
+      legend: {
+        bottom: 0,
+        left: 'center',
+        type: 'scroll',
+        itemWidth: 10,
+        itemHeight: 10,
+        textStyle: { color: '#666', fontSize: 11 },
+      },
+      series: [{
+        type: 'pie',
+        radius: ['44%', '66%'],
+        center: ['50%', '44%'],
+        avoidLabelOverlap: true,
+        itemStyle: { borderColor: '#fff', borderWidth: 2 },
+        label: { color: '#666', fontSize: 11, formatter: '{b}\n{c}' },
+        labelLine: { length: 8, length2: 8, lineStyle: { color: '#ddd' } },
+        data: items,
+      }],
+    });
+  }
+
+  function renderProvinceStampChart(rows) {
+    const entries = rows.slice(0, 10);
+
+    setText('stat-prov-stamp-chart-note', entries.length
+      ? `Top ${entries.length} · 空白计为「无戳号」`
+      : '');
+
+    if (!entries.length) {
+      setChart('prov-stamp', emptyOption('暂无日戳记录'));
+      return;
+    }
+
+    const names = entries.map(e => e.name).reverse();
+    const values = entries.map(e => e.records).reverse();
+    const max = Math.max(...values, 1);
+
+    setChart('prov-stamp', {
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+        renderMode: 'richText',
+        confine: true,
+      },
+      grid: { left: 96, right: 56, top: 10, bottom: 18 },
+      xAxis: {
+        type: 'value',
+        min: 0,
+        max: Math.max(1, Math.ceil(max * 1.18)),
+        axisLine: { show: false },
+        axisTick: { show: false },
+        axisLabel: { color: '#999', fontSize: 11 },
+        splitLine: { lineStyle: { color: '#f2f2f2' } },
+      },
+      yAxis: {
+        type: 'category',
+        data: names,
+        axisLine: { show: false },
+        axisTick: { show: false },
+        axisLabel: {
+          color: '#555',
+          fontSize: 12,
+          formatter: (v) => truncate(v, 10),
+        },
+      },
+      series: [{
+        name: '记录数',
+        type: 'bar',
+        data: values,
+        barMaxWidth: 14,
+        itemStyle: {
+          borderRadius: [0, 4, 4, 0],
+          color: gradient(0, 0, 1, 0, '#b39ddb', '#6a1b9a'),
+        },
+        label: { show: true, position: 'right', color: '#666', fontSize: 11 },
+      }],
+    });
+  }
+
+  function renderProvinceDetail(data) {
+    const options = buildProvinceOptions(data);
+    const select = $('stat-province-select');
+
+    if (!options.length) {
+      selectedProvince = '';
+      if (select) {
+        select.disabled = true;
+        select.innerHTML = '<option value="">暂无分省数据</option>';
+      }
+      setText('stat-province-title', '分省数据');
+      renderProvinceEmpty();
+      return;
+    }
+
+    if (!options.some(o => o.short === selectedProvince)) {
+      selectedProvince = options.some(o => o.short === '上海') ? '上海' : options[0].short;
+    }
+    const current = options.find(o => o.short === selectedProvince) || options[0];
+    selectedProvince = current.short;
+
+    if (select) {
+      select.disabled = false;
+      select.innerHTML = options.map(o =>
+        `<option value="${escapeHtml(o.short)}">${escapeHtml(o.full)}</option>`
+      ).join('');
+      select.value = selectedProvince;
+    }
+
+    const fullProvince = findProvinceByShort(selectedProvince);
+    const provinceName = fullProvince ? fullProvince.name : current.full;
+    const isMunicipality = MUNICIPALITY_SHORT.has(selectedProvince);
+    const provinceRecords = (data.records || []).filter(r => r && shortProvince(r.province) === selectedProvince);
+    const provinceMeters = (data.meters || []).filter(m => m && shortProvince(m.province) === selectedProvince);
+    const hasProvinceData = provinceRecords.length > 0 || provinceMeters.length > 0;
 
     let officialDistricts = [];
-    try {
-      if (typeof PostmarkData !== 'undefined' && typeof PostmarkData.getDistricts === 'function') {
-        officialDistricts = (PostmarkData.getDistricts('上海市') || []).map(clean).filter(Boolean);
-      }
-    } catch (e) { /* 参考数据不可用时退回记录里出现过的区县 */ }
+    if (fullProvince && Array.isArray(fullProvince.cities)) {
+      officialDistricts = fullProvince.cities.map(c => clean(c && c.name)).filter(Boolean);
+    }
     if (!officialDistricts.length) {
       officialDistricts = Array.from(new Set(
-        shRecords.map(r => clean(r.district)).filter(Boolean)
+        provinceRecords.map(r => recordAreaName(r, isMunicipality)).filter(a => a !== '未填写')
       ));
     }
-    const districtTotal = officialDistricts.length || 16;
+    const districtTotal = officialDistricts.length || 0;
 
     const districtMap = new Map();
     function ensureDistrict(name) {
@@ -1152,6 +1576,7 @@ const StatisticsPage = (function () {
           name: key,
           records: 0,
           open: 0,
+          delivery: 0,
           themedTemp: 0,
           closed: 0,
           misc: 0,
@@ -1177,8 +1602,9 @@ const StatisticsPage = (function () {
       return monthMap.get(key);
     }
 
-    shRecords.forEach((r) => {
-      const districtName = clean(r.district) || '未填写';
+    provinceRecords.forEach((r) => {
+      const districtName = recordAreaName(r, isMunicipality);
+      const regionName = recordRegionName(r, isMunicipality);
       const district = ensureDistrict(districtName);
       const photos = Array.isArray(r.photos) ? r.photos.filter(Boolean) : [];
       const stamps = getRecordStamps(r);
@@ -1188,6 +1614,7 @@ const StatisticsPage = (function () {
 
       district.records++;
       if (status === 'open') district.open++;
+      else if (status === 'delivery') district.delivery++;
       else if (status === 'closed') district.closed++;
       else if (status === 'themed' || status === 'temporary') district.themedTemp++;
       else district.misc++;
@@ -1221,7 +1648,7 @@ const StatisticsPage = (function () {
         officeMap.set(officeKey, {
           key: officeKey,
           name: clean(r.postOffice) || '未填写',
-          district: districtName,
+          district: regionName,
           postalCode: clean(r.postalCode),
           instCode: clean(r.institutionCode),
           status: recordStatusLabel(r),
@@ -1239,14 +1666,14 @@ const StatisticsPage = (function () {
         office.latest = date;
         office.status = recordStatusLabel(r);
         office.name = clean(r.postOffice) || office.name;
-        office.district = districtName;
+        office.district = regionName;
         office.postalCode = clean(r.postalCode) || office.postalCode;
         office.instCode = clean(r.institutionCode) || office.instCode;
       }
     });
 
-    shMeters.forEach((m) => {
-      const districtName = clean(m.district) || '未填写';
+    provinceMeters.forEach((m) => {
+      const districtName = recordAreaName(m, isMunicipality);
       ensureDistrict(districtName).meters++;
       const dt = parseDate(m.printDate);
       if (dt) ensureMonth(dt.monthKey).meters++;
@@ -1263,23 +1690,26 @@ const StatisticsPage = (function () {
         .filter(d => d.name !== '未填写' && (d.records > 0 || d.meters > 0)).length;
     }
 
-    const shPhotos = shRecords.reduce((sum, r) => {
+    const provincePhotos = provinceRecords.reduce((sum, r) => {
       return sum + (Array.isArray(r.photos) ? r.photos.filter(Boolean).length : 0);
     }, 0);
     const totalPostal = (() => {
-      const hit = (data.ranking || []).find(r => shortProvince(r.name) === '上海');
+      const hit = (data.ranking || []).find(r => shortProvince(r.name) === selectedProvince);
       return hit ? Number(hit.total) || 0 : 0;
     })();
 
-    setText('stat-sh-records', fmtNum(shRecords.length));
-    setText('stat-sh-districts', `${fmtNum(coveredDistricts)} / ${fmtNum(districtTotal)}`);
-    setText('stat-sh-meters', fmtNum(shMeters.length));
-    setText('stat-sh-photos', fmtNum(shPhotos));
-    setText('stat-shanghai-note', hasShanghai
-      ? `共 ${fmtNum(shRecords.length)} 条日戳 · ${fmtNum(shMeters.length)} 条邮资机${totalPostal ? ` · 全区网点 ${fmtNum(totalPostal)} 个` : ''}`
-      : '暂无上海数据');
+    setText('stat-province-title', `分省数据 · ${provinceName}`);
+    setText('stat-prov-records', fmtNum(provinceRecords.length));
+    setText('stat-prov-areas', districtTotal
+      ? `${fmtNum(coveredDistricts)} / ${fmtNum(districtTotal)}`
+      : fmtNum(coveredDistricts));
+    setText('stat-prov-meters', fmtNum(provinceMeters.length));
+    setText('stat-prov-photos', fmtNum(provincePhotos));
+    setText('stat-prov-note', hasProvinceData
+      ? `共 ${fmtNum(provinceRecords.length)} 条日戳 · ${fmtNum(provinceMeters.length)} 条邮资机${totalPostal ? ` · 参考库网点 ${fmtNum(totalPostal)} 个` : ''}`
+      : '暂无分省数据');
 
-    // ---- 区县收集情况 ----
+    // ---- 地区收集情况 ----
     const districtRows = Array.from(districtMap.values()).sort((a, b) => {
       const ia = officialDistricts.indexOf(a.name);
       const ib = officialDistricts.indexOf(b.name);
@@ -1290,10 +1720,12 @@ const StatisticsPage = (function () {
       }
       return b.records - a.records || a.name.localeCompare(b.name, 'zh-Hans-CN');
     });
-    const districtBody = $('stat-sh-district-body');
+    renderProvinceDistrictChart(districtRows);
+    renderProvinceStatusChart(provinceRecords);
+    const districtBody = $('stat-prov-area-body');
     if (districtBody) {
-      districtBody.innerHTML = !hasShanghai
-        ? tableEmptyRow(11, '暂无上海数据')
+      districtBody.innerHTML = !hasProvinceData
+        ? tableEmptyRow(12, '暂无分省数据')
         : districtRows.map(d => `
           <tr>
             <td>${escapeHtml(d.name)}</td>
@@ -1301,6 +1733,7 @@ const StatisticsPage = (function () {
             <td>${fmtNum(d.offices.size)}</td>
             <td>${fmtNum(d.stamps.size)}</td>
             <td>${fmtNum(d.open)}</td>
+            <td>${fmtNum(d.delivery)}</td>
             <td>${fmtNum(d.themedTemp)}</td>
             <td>${fmtNum(d.closed)}</td>
             <td>${fmtNum(d.misc)}</td>
@@ -1309,8 +1742,10 @@ const StatisticsPage = (function () {
             <td>${escapeHtml(d.latest || '—')}</td>
           </tr>`).join('');
     }
-    setText('stat-sh-district-note', hasShanghai
-      ? `${fmtNum(coveredDistricts)} / ${fmtNum(districtTotal)} 个区县有数据`
+    setText('stat-prov-area-note', hasProvinceData
+      ? (districtTotal
+          ? `${fmtNum(coveredDistricts)} / ${fmtNum(districtTotal)} 个地区有数据`
+          : `${fmtNum(coveredDistricts)} 个地区有数据`)
       : '');
 
     // ---- 戳号分布 ----
@@ -1319,10 +1754,11 @@ const StatisticsPage = (function () {
         || b.offices.size - a.offices.size
         || a.name.localeCompare(b.name, 'zh-Hans-CN'))
       .slice(0, 15);
-    const stampBody = $('stat-sh-stamp-body');
+    renderProvinceStampChart(stampRows);
+    const stampBody = $('stat-prov-stamp-body');
     if (stampBody) {
       stampBody.innerHTML = !stampRows.length
-        ? tableEmptyRow(5, '暂无上海日戳记录')
+        ? tableEmptyRow(5, '暂无日戳记录')
         : stampRows.map(s => `
           <tr>
             <td>${escapeHtml(s.name)}</td>
@@ -1332,17 +1768,19 @@ const StatisticsPage = (function () {
             <td>${escapeHtml(s.latest || '—')}</td>
           </tr>`).join('');
     }
-    setText('stat-sh-stamp-note', stampRows.length
+    setText('stat-prov-stamp-note', stampRows.length
       ? `Top ${stampRows.length} · 空白计为「无戳号」`
       : '');
 
     // ---- 月度采集 ----
     const monthKeys = Array.from(monthMap.keys()).sort();
-    const monthRange = buildMonthRange(monthKeys, 12).reverse();
-    const monthBody = $('stat-sh-month-body');
+    const monthRangeAsc = buildCurrentMonthRange(monthKeys, 12);
+    renderProvinceTrendChart(monthRangeAsc, monthMap);
+    const monthRange = monthRangeAsc.slice().reverse();
+    const monthBody = $('stat-prov-month-body');
     if (monthBody) {
       monthBody.innerHTML = !monthRange.length
-        ? tableEmptyRow(5, '暂无带日期的上海记录')
+        ? tableEmptyRow(5, '暂无带日期的记录')
         : monthRange.map((key) => {
           const m = monthMap.get(key) || { records: 0, meters: 0, photos: 0, offices: new Set() };
           return `
@@ -1355,7 +1793,7 @@ const StatisticsPage = (function () {
             </tr>`;
         }).join('');
     }
-    setText('stat-sh-month-note', monthRange.length ? `最近 ${monthRange.length} 个月` : '');
+    setText('stat-prov-month-note', monthRange.length ? `最近 ${monthRange.length} 个月` : '');
 
     // ---- 网点明细 ----
     const officeRows = Array.from(officeMap.values())
@@ -1369,10 +1807,10 @@ const StatisticsPage = (function () {
           || a.name.localeCompare(b.name, 'zh-Hans-CN');
       })
       .slice(0, 30);
-    const officeBody = $('stat-sh-office-body');
+    const officeBody = $('stat-prov-office-body');
     if (officeBody) {
       officeBody.innerHTML = !officeRows.length
-        ? tableEmptyRow(9, '暂无上海日戳记录')
+        ? tableEmptyRow(9, '暂无日戳记录')
         : officeRows.map((o) => {
           const stampsText = Array.from(o.stamps).join(', ') || '无戳号';
           return `
@@ -1389,7 +1827,7 @@ const StatisticsPage = (function () {
             </tr>`;
         }).join('');
     }
-    setText('stat-sh-office-note', officeRows.length
+    setText('stat-prov-office-note', officeRows.length
       ? `按最近盖销排序 · 前 ${officeRows.length} 个`
       : '');
   }
@@ -1408,7 +1846,11 @@ const StatisticsPage = (function () {
 
     let chart = charts[key];
     if (!chart || chart.isDisposed()) {
-      chart = echarts.init(el);
+      // 隐藏的分页容器宽高为 0，先给一个兜底尺寸；切到该页时会 resize 到真实尺寸
+      chart = echarts.init(el, null, {
+        width: el.clientWidth || 600,
+        height: el.clientHeight || 300,
+      });
       charts[key] = chart;
     }
     return chart;
@@ -1424,7 +1866,11 @@ const StatisticsPage = (function () {
     if (!visible) return;
     Object.keys(charts).forEach((key) => {
       const chart = charts[key];
-      if (chart && !chart.isDisposed()) chart.resize();
+      const el = $('stat-chart-' + key);
+      // 只调整当前可见分页里的图表，隐藏图表等切换过去时再算
+      if (chart && !chart.isDisposed() && el && el.clientWidth && el.clientHeight) {
+        chart.resize({ width: el.clientWidth, height: el.clientHeight });
+      }
     });
   }
 
@@ -1447,7 +1893,40 @@ const StatisticsPage = (function () {
     renderMail(data);
     renderReturn(data);
     renderMeter(data);
-    renderShanghai(data);
+    renderProvinceDetail(data);
+  }
+
+  function selectStatTab(key) {
+    const tabs = Array.from(document.querySelectorAll('#statistics-tabs .stat-tab'));
+    if (!tabs.length) {
+      if (visible) resize();
+      return;
+    }
+
+    if (!tabs.some(tab => tab.dataset.statTab === key)) {
+      key = tabs[0].dataset.statTab;
+    }
+    activeStatTab = key;
+
+    tabs.forEach((tab) => {
+      const on = tab.dataset.statTab === key;
+      tab.classList.toggle('is-active', on);
+      tab.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+
+    Array.from(document.querySelectorAll('#statistics-tabs .stat-tab-panel'))
+      .forEach((panel) => {
+        const on = panel.dataset.statPanel === key;
+        panel.classList.toggle('is-active', on);
+        panel.setAttribute('aria-hidden', on ? 'false' : 'true');
+      });
+
+    if (!visible) return;
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => resize());
+    } else {
+      resize();
+    }
   }
 
   function bindEvents() {
@@ -1459,6 +1938,21 @@ const StatisticsPage = (function () {
         renderCalendar(lastData);
       });
     }
+
+    const provinceSelect = $('stat-province-select');
+    if (provinceSelect && !provinceSelect.dataset.bound) {
+      provinceSelect.dataset.bound = '1';
+      provinceSelect.addEventListener('change', () => {
+        selectedProvince = provinceSelect.value;
+        if (lastData) renderProvinceDetail(lastData);
+      });
+    }
+
+    Array.from(document.querySelectorAll('#statistics-tabs .stat-tab')).forEach((tab) => {
+      if (tab.dataset.bound) return;
+      tab.dataset.bound = '1';
+      tab.addEventListener('click', () => selectStatTab(tab.dataset.statTab));
+    });
   }
 
   // 浏览器窗口尺寸变化时按新宽度重算（页面隐藏时跳过，进入页面会统一 resize）
@@ -1477,11 +1971,7 @@ const StatisticsPage = (function () {
       visible = true;
       bindEvents();
       renderAll();
-      if (typeof requestAnimationFrame === 'function') {
-        requestAnimationFrame(() => resize());
-      } else {
-        resize();
-      }
+      selectStatTab(activeStatTab);
     },
 
     /** 离开页面：停止响应尺寸变化（实例保留，下次进入直接复用） */
@@ -1493,6 +1983,7 @@ const StatisticsPage = (function () {
     refresh() {
       if (!visible) return;
       renderAll();
+      selectStatTab(activeStatTab);
     },
 
     /** 侧边栏折叠等容器尺寸变化后调用 */

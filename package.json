@@ -38,6 +38,7 @@
       "!release/**",
       "!.claude/**",
       "!output/**",
+      "!images/**",
       "!data/**",
       "!scripts/**",
       "!__pycache__/**",

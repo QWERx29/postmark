@@ -46,6 +46,8 @@
   const EXT_MIME = {
     '.jpg': 'image/jpeg',
     '.jpeg': 'image/jpeg',
+    '.jfif': 'image/jpeg',
+    '.jpe': 'image/jpeg',
     '.png': 'image/png',
     '.webp': 'image/webp',
     '.bmp': 'image/bmp',
@@ -147,6 +149,10 @@
     const base = raw.replace(/\\/g, '/');
     const slash = base.lastIndexOf('/');
     const last = slash >= 0 ? base.slice(slash + 1) : base;
+    // sanitizeStem 会去掉首尾下划线，'_unfiled' 会被改成 'unfiled'。
+    // 未归档目录是内部约定名，必须原样保留，否则写入目录与
+    // ImgNaming.UNFILED_DIR / 表单的 isUnfiled() 判断对不上。
+    if (last === UNFILED_DIR) return UNFILED_DIR;
     return sanitizeStem(last, { fallback: UNFILED_DIR, maxLength: 60 });
   }
 

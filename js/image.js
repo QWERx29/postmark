@@ -47,7 +47,8 @@ const ImageCore = (function () {
 
   /** 支持的输入格式（以内容嗅探为准，扩展名只作参考） */
   const SUPPORTED_MIME = ['image/jpeg', 'image/png', 'image/webp', 'image/bmp'];
-  const SUPPORTED_EXT = ['.jpg', '.jpeg', '.png', '.webp', '.bmp'];
+  // .jfif / .jpe 都是 JPEG 的常见别名（部分相机、下载工具会这样命名）
+  const SUPPORTED_EXT = ['.jpg', '.jpeg', '.jfif', '.jpe', '.png', '.webp', '.bmp'];
 
   /** 增强参数的默认值（0 表示不变） */
   const DEFAULT_ADJUST = { brightness: 0, contrast: 0, saturation: 0, sharpness: 0 };
@@ -258,7 +259,9 @@ const ImageCore = (function () {
         const bmp = await createImageBitmap(file);
         return { bitmap: bmp, width: bmp.width, height: bmp.height, sniffed, release: () => bmp.close() };
       } catch (e) {
-        throw fail('CORRUPT');
+        // 某些格式 / 超大图在 createImageBitmap 上会失败，但 <img> 仍能解码
+        // （例如旧版 Chromium 的 BMP、部分 CMYK JPEG）。这里继续走下面的
+        // objectURL + <img> 兜底，而不是直接判定文件损坏。
       }
     }
 

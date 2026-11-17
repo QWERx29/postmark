@@ -33,8 +33,8 @@
 
   /** 已选中的打印日期；selY === 0 表示还没选（提交时按空处理） */
   let selY = 0, selM = 0, selD = 0;
-  /** 日历面板当前显示的年月：翻月只动它，不会改变已选值 */
-  let viewY = 0, viewM = 0;
+  /** 日历组件实例 */
+  let cal = null;
 
   /** 网点候选下拉（懒建） */
   let suggestionsEl = null;
@@ -109,59 +109,31 @@
   }
 
   // ============================================================
-  // 打印日期：与「录入日戳」同款日历弹窗
+  // 打印日期：统一日历组件（js/calendar.js）
   // ============================================================
-  function renderCalendar() {
-    els.calTitle.textContent = `${viewY}年${pad2(viewM)}月`;
-    const firstDow = new Date(viewY, viewM - 1, 1).getDay();
-    const days = new Date(viewY, viewM, 0).getDate();
-    const now = new Date();
-    const cells = [];
-    for (let i = 0; i < firstDow; i++) cells.push('<span></span>');
-    for (let d = 1; d <= days; d++) {
-      const isToday = viewY === now.getFullYear() && viewM === now.getMonth() + 1 && d === now.getDate();
-      const isSel = selY === viewY && selM === viewM && d === selD;
-      const cls = (isToday ? ' cal-today' : '') + (isSel ? ' cal-sel' : '');
-      cells.push(`<span class="cal-day${cls}" data-d="${d}">${d}</span>`);
-    }
-    els.calGrid.innerHTML = cells.join('');
-  }
-
   function openCalendar() {
-    // 打开时默认停在已选月份，没选过就停在今天
-    const n = new Date();
-    viewY = selY || n.getFullYear();
-    viewM = selM || n.getMonth() + 1;
-    renderCalendar();
-    const rect = els.dateInput.getBoundingClientRect();
-    // 移到 body：modal-container 有 transform，会让 fixed 定位失效
-    document.body.appendChild(els.calPopup);
-    els.calPopup.style.left = rect.left + 'px';
-    els.calPopup.style.top = (rect.bottom + 4) + 'px';
-    els.calPopup.style.width = Math.max(rect.width, 272) + 'px';
-    els.calPopup.classList.add('active');
-    els.dateInput.classList.add('active');
+    if (!cal) return;
+    cal.open({
+      year: selY || undefined,
+      month: selM || undefined,
+      selected: selY ? { y: selY, m: selM, d: selD } : null,
+      anchor: els.dateInput,
+    });
   }
 
   function closeCalendar() {
-    if (!els) return;
-    els.calPopup.classList.remove('active');
-    els.dateInput.classList.remove('active');
-    // 放回原位置，避免一直挂在 body 上
-    if (els.calPopup.parentNode === document.body) {
-      els.dateInput.parentNode.appendChild(els.calPopup);
-    }
+    if (cal) cal.close();
   }
 
   function toggleCalendar() {
-    if (els.calPopup.classList.contains('active')) closeCalendar();
+    if (!cal) return;
+    if (cal.isOpen()) closeCalendar();
     else openCalendar();
   }
 
   /** 选中日期；silent=true 时不关弹窗（用于回填已有记录） */
   function setDate(y, m, d, silent) {
     selY = y; selM = m; selD = d;
-    viewY = y; viewM = m;
     els.dateText.textContent = `${y}年${pad2(m)}月${pad2(d)}日`;
     els.dateText.style.color = '#333';
     if (!silent) closeCalendar();
@@ -170,8 +142,6 @@
   /** 清空日期，回到「请选择日期」的灰色占位（selY = 0 → 提交时按空处理） */
   function clearDate() {
     selY = 0; selM = 0; selD = 0;
-    const n = new Date();
-    viewY = n.getFullYear(); viewM = n.getMonth() + 1;
     els.dateText.textContent = '请选择日期';
     els.dateText.style.color = '';
   }
@@ -690,6 +660,17 @@
     cacheEls();
     if (!els.page) return;
 
+    if (typeof CalendarPopup !== 'undefined' && CalendarPopup && CalendarPopup.create) {
+      cal = CalendarPopup.create({
+        popup: els.calPopup,
+        title: els.calTitle,
+        grid: els.calGrid,
+        prev: els.calPrev,
+        next: els.calNext,
+        onPick: (y, m, d) => setDate(y, m, d),
+      });
+    }
+
     loadSortPref();
     renderSortUI();
     populateProvinces();
@@ -734,28 +715,8 @@
     els.fOffice.addEventListener('focus', refreshSuggestions);
     els.fOffice.addEventListener('blur', () => { setTimeout(hideSuggestions, 200); });
 
-    // 打印日期：日历弹窗（与「录入日戳」同款交互）
+    // 打印日期：日历弹窗（统一组件，含年历切换）
     els.dateInput.addEventListener('click', toggleCalendar);
-    els.calPrev.addEventListener('click', (e) => {
-      e.stopPropagation();
-      viewM--; if (viewM < 1) { viewM = 12; viewY--; }
-      renderCalendar();
-    });
-    els.calNext.addEventListener('click', (e) => {
-      e.stopPropagation();
-      viewM++; if (viewM > 12) { viewM = 1; viewY++; }
-      renderCalendar();
-    });
-    els.calGrid.addEventListener('click', (e) => {
-      const cell = e.target.closest('.cal-day');
-      if (cell) setDate(viewY, viewM, parseInt(cell.dataset.d, 10));
-    });
-    document.addEventListener('click', (e) => {
-      if (els.calPopup.classList.contains('active') &&
-          !els.dateInput.contains(e.target) && !els.calPopup.contains(e.target)) {
-        closeCalendar();
-      }
-    });
 
     // 数据变化（含移植 / 导入 / 别处改动）时刷新列表
     MeterStore.onChange(() => { if (els.page.style.display !== 'none') render(); });

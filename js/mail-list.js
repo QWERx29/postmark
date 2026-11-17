@@ -44,63 +44,44 @@
       calNext: $('m-cal-next'),
       fType: $('m-type'),
       fNo: $('m-no'),
+      fNoHint: $('m-no-hint'),
       fNoRequired: $('m-no-required'),
       fFrom: $('m-from'),
       fTo: $('m-to'),
       fContent: $('m-content'),
+      exportJsonBtn: $('btn-mail-export-json'),
+      exportExcelBtn: $('btn-mail-export-excel'),
     };
   }
 
   // ============================================================
-  // 发出日期：与「录入日戳」同款日历弹窗（同一套 .cal-* / .date-input 样式）
+  // 发出日期：统一日历组件（js/calendar.js）
   // ============================================================
   /** 表单当前值：YYYY-MM-DD，空串表示还没选 */
   let dateValue = '';
-  /** 日历正在显示（兼当前选中）的年月日 */
+  /** 当前选中 / 回填的年月日（空日期时停在今天） */
   let calY = 0, calM = 0, calD = 0;
+  let cal = null;
 
   const pad2 = (n) => String(n).padStart(2, '0');
 
-  function renderCalendar() {
-    if (!els) cacheEls();
-    els.calTitle.textContent = `${calY}年${pad2(calM)}月`;
-    const firstDow = new Date(calY, calM - 1, 1).getDay();
-    const days = new Date(calY, calM, 0).getDate();
-    const now = new Date();
-    const cells = [];
-    for (let i = 0; i < firstDow; i++) cells.push('<span></span>');
-    for (let d = 1; d <= days; d++) {
-      const isToday = calY === now.getFullYear() && calM === now.getMonth() + 1 && d === now.getDate();
-      const cls = (isToday ? ' cal-today' : '') + (d === calD ? ' cal-sel' : '');
-      cells.push(`<span class="cal-day${cls}" data-d="${d}">${d}</span>`);
-    }
-    els.calGrid.innerHTML = cells.join('');
-  }
-
   function openCalendar() {
-    renderCalendar();
-    const rect = els.dateInput.getBoundingClientRect();
-    // 移到 body：modal-container 有 transform，会让 fixed 定位失效
-    document.body.appendChild(els.calPopup);
-    els.calPopup.style.left = rect.left + 'px';
-    els.calPopup.style.top = (rect.bottom + 4) + 'px';
-    els.calPopup.style.width = Math.max(rect.width, 272) + 'px';
-    els.calPopup.classList.add('active');
-    els.dateInput.classList.add('active');
+    if (!cal) return;
+    cal.open({
+      year: calY || undefined,
+      month: calM || undefined,
+      selected: dateValue ? { y: calY, m: calM, d: calD } : null,
+      anchor: els.dateInput,
+    });
   }
 
   function closeCalendar() {
-    if (!els) return;
-    els.calPopup.classList.remove('active');
-    els.dateInput.classList.remove('active');
-    // 放回原位置，避免一直挂在 body 上
-    if (els.calPopup.parentNode === document.body) {
-      els.dateInput.parentNode.appendChild(els.calPopup);
-    }
+    if (cal) cal.close();
   }
 
   function toggleCalendar() {
-    if (els.calPopup.classList.contains('active')) closeCalendar();
+    if (!cal) return;
+    if (cal.isOpen()) closeCalendar();
     else openCalendar();
   }
 
@@ -239,6 +220,100 @@
     const need = MailStore.requiresMailNo(els.fType.value);
     if (els.fNoRequired) els.fNoRequired.style.display = need ? '' : 'none';
     els.fNo.placeholder = need ? '邮件号码' : '邮件号码 (选填)';
+    updateMailNoHint();
+  }
+
+  // ============================================================
+  // 邮件号码：扫码枪输入 + 即时校验
+  // ------------------------------------------------------------
+  // 扫码枪本质上是一个"打字很快的键盘"，会在末尾补一个回车。
+  // 这里做三件事：
+  //   1. 去掉空格 / 换行并转大写（扫描结果常带空白）；
+  //   2. 用工具箱同一套 13 位信函条码算法即时校验，只提示不阻断；
+  //   3. 回车不提交表单，而是把焦点交给「寄出地」，避免扫码后误保存。
+  // ============================================================
+  function validateMailNo(raw) {
+    const text = String(raw == null ? '' : raw);
+    if (typeof Tools !== 'undefined' && typeof Tools.validateLetterBarcode === 'function') {
+      return Tools.validateLetterBarcode(text);
+    }
+    // 工具箱没加载时的兜底：只检查长度，不假装校验通过
+    const code = text.replace(/\s+/g, '').toUpperCase();
+    if (!code) return { ok: false, empty: true, message: '' };
+    return {
+      ok: code.length === 13,
+      message: code.length === 13
+        ? '长度为 13 位（未接入校验算法）'
+        : `应为 13 位，当前 ${code.length} 位`,
+    };
+  }
+
+  function updateMailNoHint() {
+    if (!els || !els.fNoHint) return;
+    const raw = els.fNo.value.trim();
+    if (!raw) {
+      els.fNoHint.style.display = 'none';
+      els.fNoHint.textContent = '';
+      els.fNoHint.className = 'mail-no-hint';
+      return;
+    }
+    const res = validateMailNo(raw);
+    els.fNoHint.style.display = 'block';
+    els.fNoHint.textContent = (res.ok ? '✓ ' : '⚠ ') + (res.message || '');
+    els.fNoHint.className = 'mail-no-hint ' + (res.ok ? 'is-ok' : 'is-warn');
+  }
+
+  function normalizeMailNoInput() {
+    if (!els || !els.fNo) return;
+    const cleaned = els.fNo.value.replace(/\s+/g, '').toUpperCase();
+    if (els.fNo.value !== cleaned) els.fNo.value = cleaned;
+    updateMailNoHint();
+  }
+
+  // ============================================================
+  // 导出（当前状态的邮件；与「国际退信」的 JSON 备份口径一致）
+  // ============================================================
+  function exportHeaders() {
+    return ['状态', '发出日期', '邮件种类', '邮件号码', '寄出地', '寄达地', '内容', '录入时间'];
+  }
+
+  function exportRows(list) {
+    return list.map((r) => [
+      MailStore.STATUS_LABEL[r.status] || r.status || '',
+      r.sendDate || '',
+      r.mailType || '',
+      r.mailNo || '',
+      r.fromPlace || '',
+      r.toPlace || '',
+      r.content || '',
+      r.createdAt || '',
+    ]);
+  }
+
+  function exportJson() {
+    const list = MailStore.getByStatus(currentStatus);
+    if (list.length === 0) { Dialog.alert('当前状态下暂无数据可导出'); return; }
+    if (typeof ExportUtils === 'undefined') { Dialog.alert('导出组件未加载，请刷新页面'); return; }
+    ExportUtils.downloadJson(
+      `邮件-${MailStore.STATUS_LABEL[currentStatus]}-${ExportUtils.fileDate()}.json`,
+      list
+    );
+  }
+
+  function exportExcel() {
+    const list = MailStore.getByStatus(currentStatus);
+    if (list.length === 0) { Dialog.alert('当前状态下暂无数据可导出'); return; }
+    if (typeof ExportUtils === 'undefined') { Dialog.alert('导出组件未加载，请刷新页面'); return; }
+    try {
+      ExportUtils.downloadXlsx(
+        `邮件-${MailStore.STATUS_LABEL[currentStatus]}-${ExportUtils.fileDate()}.xlsx`,
+        MailStore.STATUS_LABEL[currentStatus],
+        exportHeaders(),
+        exportRows(list)
+      );
+    } catch (e) {
+      Dialog.alert('导出 Excel 失败: ' + e.message);
+    }
   }
 
   /**
@@ -302,6 +377,17 @@
       return;
     }
 
+    // 即时校验只是提示：号码格式不对时问一句，仍允许保存（历史数据 / 非标准单号）
+    if (mailNo) {
+      const check = validateMailNo(mailNo);
+      if (!check.ok) {
+        const go = await Dialog.confirm(
+          `邮件号码「${mailNo}」校验未通过：\n${check.message || '格式不正确'}\n\n仍要保存吗？`
+        );
+        if (!go) { els.fNo.focus(); return; }
+      }
+    }
+
     const data = {
       sendDate,
       mailType,
@@ -330,6 +416,17 @@
     cacheEls();
     if (!els.card) return;
 
+    if (typeof CalendarPopup !== 'undefined' && CalendarPopup && CalendarPopup.create) {
+      cal = CalendarPopup.create({
+        popup: els.calPopup,
+        title: els.calTitle,
+        grid: els.calGrid,
+        prev: els.calPrev,
+        next: els.calNext,
+        onPick: (y, m, d) => setDate(y, m, d),
+      });
+    }
+
     els.addBtn.addEventListener('click', () => openForm(null));
     els.search.addEventListener('input', () => {
       searchTerms[currentStatus] = els.search.value;
@@ -338,28 +435,22 @@
     els.form.addEventListener('submit', submitForm);
     els.fType.addEventListener('change', syncTypeUI);
 
-    // 发出日期：日历弹窗（与录入日戳同款交互）
+    // 扫码枪：去掉空白 + 即时校验；回车不提交表单，交给「寄出地」
+    if (els.fNo) {
+      els.fNo.addEventListener('input', normalizeMailNoInput);
+      els.fNo.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        normalizeMailNoInput();
+        els.fFrom.focus();
+      });
+    }
+
+    if (els.exportJsonBtn) els.exportJsonBtn.addEventListener('click', exportJson);
+    if (els.exportExcelBtn) els.exportExcelBtn.addEventListener('click', exportExcel);
+
+    // 发出日期：日历弹窗（统一组件，含年历切换）
     els.dateInput.addEventListener('click', toggleCalendar);
-    els.calPrev.addEventListener('click', (e) => {
-      e.stopPropagation();
-      calM--; if (calM < 1) { calM = 12; calY--; }
-      renderCalendar();
-    });
-    els.calNext.addEventListener('click', (e) => {
-      e.stopPropagation();
-      calM++; if (calM > 12) { calM = 1; calY++; }
-      renderCalendar();
-    });
-    els.calGrid.addEventListener('click', (e) => {
-      const cell = e.target.closest('.cal-day');
-      if (cell) setDate(calY, calM, parseInt(cell.dataset.d, 10));
-    });
-    document.addEventListener('click', (e) => {
-      if (els.calPopup.classList.contains('active') &&
-          !els.dateInput.contains(e.target) && !els.calPopup.contains(e.target)) {
-        closeCalendar();
-      }
-    });
 
     $('m-cancel').addEventListener('click', closeForm);
     $('m-cancel-top').addEventListener('click', closeForm);

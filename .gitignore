@@ -36,3 +36,6 @@ scripts/_realdiff.json
 # Python
 __pycache__/
 scripts/_tmp_*
+
+# 日戳图片（用户数据，不入库；可用 POSTMARK_IMAGES_DIR 改到别处）
+images/
