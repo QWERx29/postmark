@@ -447,6 +447,418 @@ const StatisticsPage = (function () {
   }
 
   // ============================================================
+  // 收集目标（本机保存）
+  // ============================================================
+  const GOALS_KEY = 'postmark_stats_goals';
+  const goals = { annual: 0, monthly: 0 };
+
+  function loadGoals() {
+    try {
+      const raw = localStorage.getItem(GOALS_KEY);
+      if (!raw) return;
+      const obj = JSON.parse(raw);
+      goals.annual = Math.max(0, Math.floor(Number(obj && obj.annual) || 0));
+      goals.monthly = Math.max(0, Math.floor(Number(obj && obj.monthly) || 0));
+    } catch (e) {
+      goals.annual = 0;
+      goals.monthly = 0;
+    }
+  }
+
+  function saveGoals() {
+    try {
+      localStorage.setItem(GOALS_KEY, JSON.stringify({ annual: goals.annual, monthly: goals.monthly }));
+    } catch (e) { /* 隐私模式忽略 */ }
+  }
+
+  function yearRecordCount(data) {
+    const year = String(new Date().getFullYear());
+    let total = 0;
+    data.monthRecordCount.forEach((value, key) => {
+      if (String(key).slice(0, 4) === year) total += Number(value) || 0;
+    });
+    return total;
+  }
+
+  function currentMonthRecordCount(data) {
+    const now = new Date();
+    return data.monthRecordCount.get(`${now.getFullYear()}-${pad2(now.getMonth() + 1)}`) || 0;
+  }
+
+  function setGoalProgress(barId, textId, value, goal) {
+    const pct = goal > 0 ? Math.min(100, Math.round(value / goal * 1000) / 10) : 0;
+    const bar = $(barId);
+    if (bar) {
+      bar.style.width = `${pct}%`;
+      bar.classList.toggle('is-full', goal > 0 && value >= goal);
+    }
+    setText(textId, goal > 0
+      ? `${fmtNum(value)} / ${fmtNum(goal)} · ${pct}%`
+      : `${fmtNum(value)} 条 · 未设置目标`);
+  }
+
+  function renderGoals(data) {
+    const annualInput = $('stat-goal-annual');
+    const monthlyInput = $('stat-goal-monthly');
+    // 用户正在输入时不要抢回焦点 / 覆盖值
+    if (annualInput && document.activeElement !== annualInput) {
+      annualInput.value = goals.annual > 0 ? String(goals.annual) : '';
+    }
+    if (monthlyInput && document.activeElement !== monthlyInput) {
+      monthlyInput.value = goals.monthly > 0 ? String(goals.monthly) : '';
+    }
+
+    setGoalProgress('stat-goal-annual-bar', 'stat-goal-annual-text', yearRecordCount(data), goals.annual);
+    setGoalProgress('stat-goal-monthly-bar', 'stat-goal-monthly-text', currentMonthRecordCount(data), goals.monthly);
+    setText('stat-goal-note', '按盖销日期统计 · 目标只保存在本机');
+  }
+
+  // ============================================================
+  // 收集网点分布（统计页地图）
+  // ------------------------------------------------------------
+  // 记录里只有省 / 市 / 县，没有经纬度。这里用本地 GeoJSON 的
+  // properties.center / centroid 作为城市中心点，按城市聚合计数后画散点。
+  // 港澳台 / 直辖市用区县名匹配，匹配不到时退回省级中心点。
+  // ============================================================
+  const PANEL_CHART_KEYS = {
+    overview: ['province', 'trend', 'geomap', 'calendar'],
+    postmark: ['status', 'material', 'stamp', 'hour', 'gauge', 'meter'],
+    mail: ['mail', 'return'],
+    province: ['prov-district', 'prov-trend', 'prov-status', 'prov-stamp'],
+  };
+
+  let nationGeo = null;
+  let chinaGeoReady = false;
+  let chinaGeoPromise = null;
+  let geoRenderToken = 0;
+  const provinceCentersCache = new Map();
+
+  async function ensureChinaGeo() {
+    if (chinaGeoReady) return true;
+    if (typeof echarts === 'undefined') return false;
+    if (typeof echarts.getMap === 'function' && echarts.getMap('china')) {
+      const existing = echarts.getMap('china');
+      nationGeo = (existing && existing.geoJson) ? existing.geoJson : existing;
+      chinaGeoReady = true;
+      return true;
+    }
+    if (!chinaGeoPromise) {
+      chinaGeoPromise = fetch('geo/100000_full.json')
+        .then((resp) => {
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          return resp.json();
+        })
+        .then((geo) => {
+          echarts.registerMap('china', geo);
+          nationGeo = geo;
+          chinaGeoReady = true;
+          return true;
+        })
+        .catch((err) => {
+          console.warn('[Statistics] 全国地图加载失败:', err);
+          chinaGeoPromise = null;
+          return false;
+        });
+    }
+    return chinaGeoPromise;
+  }
+
+  async function loadProvinceCenters(adcode) {
+    const key = String(adcode);
+    if (provinceCentersCache.has(key)) return provinceCentersCache.get(key);
+
+    const map = new Map();
+    try {
+      const resp = await fetch(`geo/${key}_full.json`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const geo = await resp.json();
+      (geo.features || []).forEach((feature) => {
+        const p = (feature && feature.properties) || {};
+        const center = p.center || p.centroid;
+        if (p.name && Array.isArray(center) && center.length >= 2) {
+          map.set(String(p.name), [Number(center[0]), Number(center[1])]);
+        }
+      });
+    } catch (e) {
+      // 单个省加载失败不影响其它省；退回省级中心点
+    }
+    provinceCentersCache.set(key, map);
+    return map;
+  }
+
+  function provinceAdcode(name) {
+    if (typeof PostmarkData === 'undefined') return null;
+    try {
+      const prov = typeof PostmarkData.getProvinceByName === 'function'
+        ? PostmarkData.getProvinceByName(name)
+        : null;
+      return prov && prov.adcode ? prov.adcode : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function nationProvinceCenter(name) {
+    if (!nationGeo) return null;
+    const target = shortProvince(name);
+    const feature = (nationGeo.features || []).find((f) => {
+      const p = (f && f.properties) || {};
+      return shortProvince(p.name) === target;
+    });
+    const p = (feature && feature.properties) || {};
+    const center = p.center || p.centroid;
+    return Array.isArray(center) && center.length >= 2
+      ? [Number(center[0]), Number(center[1])]
+      : null;
+  }
+
+  async function buildGeoPoints(records) {
+    const groups = new Map();
+
+    (records || []).forEach((r) => {
+      if (!r || typeof r !== 'object') return;
+      const province = clean(r.province);
+      if (!province) return;
+
+      const shortP = shortProvince(province);
+      const isMunicipality = MUNICIPALITY_SHORT.has(shortP);
+      const city = clean(r.city);
+      const district = clean(r.district);
+      const place = isMunicipality
+        ? (district || city || shortP)
+        : (city || district || shortP);
+      if (!place) return;
+
+      const key = `${province}|${place}`;
+      if (!groups.has(key)) groups.set(key, { province, place, records: [] });
+      groups.get(key).records.push(r);
+    });
+
+    if (!groups.size) return [];
+    const mapReady = await ensureChinaGeo();
+    if (!mapReady) return [];
+
+    // 先把涉及的省份 GeoJSON 并发取回来（每个省只取一次），再逐点匹配
+    const adcodes = Array.from(new Set(
+      Array.from(groups.values())
+        .map((g) => provinceAdcode(g.province))
+        .filter(Boolean)
+    ));
+    await Promise.all(adcodes.map((adcode) => loadProvinceCenters(adcode)));
+
+    const points = [];
+    for (const group of groups.values()) {
+      let coord = null;
+      const adcode = provinceAdcode(group.province);
+      if (adcode) {
+        const centers = provinceCentersCache.get(String(adcode)) || new Map();
+        coord = centers.get(group.place)
+          || centers.get(group.place.replace(/[市县区旗]$/, ''))
+          || null;
+      }
+      if (!coord) coord = nationProvinceCenter(group.province);
+      if (!coord) continue;
+
+      points.push({
+        name: group.place,
+        province: group.province,
+        value: [coord[0], coord[1], group.records.length],
+        records: group.records,
+      });
+    }
+    return points;
+  }
+
+  async function renderGeoMap(data) {
+    const note = $('stat-geomap-note');
+    const token = ++geoRenderToken;
+    if (note) note.textContent = '加载地图数据…';
+
+    try {
+      const points = await buildGeoPoints(data.records);
+      if (token !== geoRenderToken) return;
+
+      if (!points.length) {
+        setChart('geomap', emptyOption('暂无可定位的收集记录'));
+        if (note) note.textContent = '';
+        return;
+      }
+
+      const max = Math.max(1, ...points.map((p) => p.value[2]));
+      setChart('geomap', {
+        tooltip: {
+          trigger: 'item',
+          renderMode: 'richText',
+          confine: true,
+          formatter(p) {
+            if (!p.data) return '';
+            return `${p.data.province} · ${p.data.name}\n收集 ${p.data.value[2]} 条（点击查看）`;
+          },
+        },
+        geo: {
+          map: 'china',
+          roam: true,
+          zoom: 1.15,
+          top: 8,
+          bottom: 8,
+          itemStyle: { areaColor: '#f6f8f6', borderColor: '#dbe4db' },
+          emphasis: {
+            itemStyle: { areaColor: '#e8f5e9' },
+            label: { show: false },
+          },
+          select: { disabled: true },
+        },
+        visualMap: {
+          min: 1,
+          max,
+          calculable: false,
+          orient: 'vertical',
+          right: 8,
+          bottom: 12,
+          itemWidth: 8,
+          itemHeight: 60,
+          text: ['多', '少'],
+          textStyle: { fontSize: 10, color: '#888' },
+          inRange: { color: ['#a5d6a7', '#00991A'] },
+        },
+        series: [{
+          name: '收集网点',
+          type: 'scatter',
+          coordinateSystem: 'geo',
+          data: points,
+          symbolSize(value) {
+            return Math.max(8, Math.min(36, 8 + Math.sqrt(Number(value[2]) || 1) * 4));
+          },
+          itemStyle: {
+            opacity: 0.85,
+            borderColor: '#fff',
+            borderWidth: 1,
+          },
+          emphasis: { scale: 1.5 },
+          label: { show: false },
+          zlevel: 2,
+        }],
+      });
+
+      const chart = ensureChart('geomap');
+      if (chart) {
+        chart.off('click');
+        chart.on('click', (params) => {
+          if (params && params.data && Array.isArray(params.data.records)) {
+            openMapRecords(params.data);
+          }
+        });
+      }
+      if (note) {
+        const mapped = points.reduce((sum, p) => sum + (Number(p.value[2]) || 0), 0);
+        note.textContent = `${points.length} 个城市 · ${mapped} 条记录`;
+      }
+    } catch (e) {
+      console.warn('[Statistics] 地图分布渲染失败:', e);
+      if (token === geoRenderToken) {
+        setChart('geomap', emptyOption('地图分布加载失败'));
+        if (note) note.textContent = '';
+      }
+    }
+  }
+
+  function openMapRecords(point) {
+    if (!point || !Array.isArray(point.records)) return;
+
+    // 只有一个网点时直接打开详情，省掉一次中间列表
+    if (point.records.length === 1 && typeof RecordDetail !== 'undefined') {
+      RecordDetail.open(point.records[0].id);
+      return;
+    }
+
+    const overlay = $('stat-map-records-overlay');
+    const title = $('stat-map-records-title');
+    const list = $('stat-map-records-list');
+    if (!overlay || !list) return;
+
+    if (title) title.textContent = `${point.province} · ${point.name}（${point.records.length} 条）`;
+
+    const records = point.records.slice().sort((a, b) => {
+      return String(b.cancelDate || '').localeCompare(String(a.cancelDate || ''));
+    });
+
+    list.innerHTML = records.map((r) => {
+      const date = dateOnly(r.cancelDate) || '未记录日期';
+      const stamps = getRecordStamps(r).join('、') || '无戳号';
+      return `<button type="button" class="stat-map-record" data-id="${escapeHtml(r.id)}">
+        <span class="stat-map-record-name">${escapeHtml(r.postOffice || '(无名称)')}</span>
+        <span class="stat-map-record-meta">${escapeHtml(date)} · ${escapeHtml(stamps)} · ${escapeHtml(r.institutionCode || '无机构号')}</span>
+      </button>`;
+    }).join('');
+
+    list.querySelectorAll('[data-id]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.id;
+        closeMapRecords();
+        if (typeof RecordDetail !== 'undefined') RecordDetail.open(id);
+      });
+    });
+
+    overlay.classList.add('active');
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeMapRecords() {
+    const overlay = $('stat-map-records-overlay');
+    if (!overlay) return false;
+    const wasOpen = overlay.classList.contains('active');
+    overlay.classList.remove('active');
+    document.body.style.overflow = '';
+    return wasOpen;
+  }
+
+  // ============================================================
+  // 图表 PNG 导出
+  // ============================================================
+  function exportActiveCharts() {
+    const keys = PANEL_CHART_KEYS[activeStatTab] || [];
+    const list = keys
+      .map((key) => ({ key, chart: charts[key] }))
+      .filter((item) => item.chart && !item.chart.isDisposed());
+
+    if (!list.length) {
+      if (typeof Dialog !== 'undefined') Dialog.alert('当前分页没有可导出的图表。');
+      return;
+    }
+
+    const now = new Date();
+    const stamp = `${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}`;
+    list.forEach((item, index) => {
+      setTimeout(() => {
+        try {
+          const url = item.chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#fff' });
+          const filename = `统计-${activeStatTab}-${stamp}-${item.key}.png`;
+
+          if (typeof ExportUtils !== 'undefined' && typeof ExportUtils.downloadBlob === 'function') {
+            const comma = url.indexOf(',');
+            const meta = url.slice(0, comma);
+            const mime = (/:(.*?);/.exec(meta) || [])[1] || 'image/png';
+            const binary = atob(url.slice(comma + 1));
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            ExportUtils.downloadBlob(new Blob([bytes], { type: mime }), filename);
+            return;
+          }
+
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+        } catch (e) {
+          console.warn('[Statistics] 导出图表失败:', e);
+        }
+      }, index * 350);
+    });
+  }
+
+  // ============================================================
   // 概览卡片
   // ============================================================
   function renderKpi(data) {
@@ -597,6 +1009,35 @@ const StatisticsPage = (function () {
     const labels = range.map(k => k.slice(2).replace('-', '/'));
     const recordSeries = range.map(k => data.monthRecordCount.get(k) || 0);
     const meterSeries = range.map(k => data.monthMeterCount.get(k) || 0);
+    const monthlyGoal = Number(goals.monthly) || 0;
+
+    const recordLine = {
+      name: '日戳',
+      type: 'line',
+      smooth: true,
+      symbol: 'circle',
+      symbolSize: 5,
+      data: recordSeries,
+      lineStyle: { width: 2, color: '#00991A' },
+      itemStyle: { color: '#00991A' },
+      areaStyle: {
+        color: gradient(0, 0, 0, 1, 'rgba(0,153,26,.20)', 'rgba(0,153,26,0)'),
+      },
+    };
+    if (monthlyGoal > 0) {
+      recordLine.markLine = {
+        silent: true,
+        symbol: 'none',
+        label: {
+          formatter: `月目标 ${monthlyGoal}`,
+          position: 'insideEndTop',
+          color: '#ef5350',
+          fontSize: 10,
+        },
+        lineStyle: { color: '#ef5350', type: 'dashed', width: 1 },
+        data: [{ yAxis: monthlyGoal }],
+      };
+    }
 
     setChart('trend', {
       tooltip: { trigger: 'axis', renderMode: 'richText', confine: true },
@@ -630,19 +1071,7 @@ const StatisticsPage = (function () {
         splitLine: { lineStyle: { color: '#f2f2f2' } },
       },
       series: [
-        {
-          name: '日戳',
-          type: 'line',
-          smooth: true,
-          symbol: 'circle',
-          symbolSize: 5,
-          data: recordSeries,
-          lineStyle: { width: 2, color: '#00991A' },
-          itemStyle: { color: '#00991A' },
-          areaStyle: {
-            color: gradient(0, 0, 0, 1, 'rgba(0,153,26,.20)', 'rgba(0,153,26,0)'),
-          },
-        },
+        recordLine,
         {
           name: '邮资机戳',
           type: 'line',
@@ -1882,6 +2311,7 @@ const StatisticsPage = (function () {
     lastData = data;
 
     renderKpi(data);
+    renderGoals(data);
     renderProvince(data);
     renderTrend(data);
     renderCalendar(data);
@@ -1894,6 +2324,7 @@ const StatisticsPage = (function () {
     renderReturn(data);
     renderMeter(data);
     renderProvinceDetail(data);
+    renderGeoMap(data);
   }
 
   function selectStatTab(key) {
@@ -1930,6 +2361,42 @@ const StatisticsPage = (function () {
   }
 
   function bindEvents() {
+    // 收集目标：输入后立即保存；页面可见时同步进度与趋势目标线
+    const annualInput = $('stat-goal-annual');
+    const monthlyInput = $('stat-goal-monthly');
+    [annualInput, monthlyInput].forEach((input) => {
+      if (!input || input.dataset.bound) return;
+      input.dataset.bound = '1';
+      input.addEventListener('change', () => {
+        goals.annual = Math.max(0, Math.floor(Number(annualInput ? annualInput.value : 0) || 0));
+        goals.monthly = Math.max(0, Math.floor(Number(monthlyInput ? monthlyInput.value : 0) || 0));
+        saveGoals();
+        if (lastData) {
+          renderGoals(lastData);
+          renderTrend(lastData);
+        }
+      });
+    });
+
+    const exportBtn = $('btn-statistics-export');
+    if (exportBtn && !exportBtn.dataset.bound) {
+      exportBtn.dataset.bound = '1';
+      exportBtn.addEventListener('click', exportActiveCharts);
+    }
+
+    // 地图点位弹窗
+    const mapOverlay = $('stat-map-records-overlay');
+    if (mapOverlay && !mapOverlay.dataset.bound) {
+      mapOverlay.dataset.bound = '1';
+      const closeBtn = $('stat-map-records-close');
+      const okBtn = $('stat-map-records-ok');
+      if (closeBtn) closeBtn.addEventListener('click', closeMapRecords);
+      if (okBtn) okBtn.addEventListener('click', closeMapRecords);
+      mapOverlay.addEventListener('click', (e) => {
+        if (e.target === mapOverlay) closeMapRecords();
+      });
+    }
+
     const select = $('stat-calendar-year');
     if (select && !select.dataset.bound) {
       select.dataset.bound = '1';
@@ -1969,6 +2436,7 @@ const StatisticsPage = (function () {
     /** 进入页面：绑定事件、首次渲染，并在下一帧校正图表尺寸 */
     show() {
       visible = true;
+      loadGoals();
       bindEvents();
       renderAll();
       selectStatTab(activeStatTab);
@@ -1992,6 +2460,11 @@ const StatisticsPage = (function () {
     /** 供 app.js 判断统计页是否处于可见状态 */
     isVisible() {
       return visible;
+    },
+
+    /** 关闭地图点位记录弹窗（Esc 处理用）；返回是否真的关了一个 */
+    closeMapRecords() {
+      return closeMapRecords();
     },
   };
 })();

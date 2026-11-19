@@ -79,6 +79,8 @@
       detailTitle: $('return-detail-title'),
       detailCountry: $('return-detail-country'),
       detailMailNo: $('return-detail-mailno'),
+      detailTimeline: $('return-detail-timeline'),
+      detailRouteMap: $('return-detail-route-map'),
       detailRoute: $('return-detail-route'),
       detailNotes: $('return-detail-notes'),
       calPopup: $('mr-cal-popup'),
@@ -232,6 +234,29 @@
     els.detailMailNo.textContent = rec.mailNo || '-';
 
     const steps = ReturnStore.routeSteps(rec.route);
+
+    // 时间轴：四个节点按「寄出 → 寄达 → 返回 → 收回」展示，未填的置灰
+    if (els.detailTimeline) {
+      els.detailTimeline.innerHTML = ReturnStore.TIMELINE.map((t) => {
+        const value = String(rec[t.key] || '').trim();
+        return `<div class="ret-timeline-item${value ? ' is-done' : ''}">
+          <span class="ret-timeline-dot"></span>
+          <span class="ret-timeline-label">${esc(t.label)}</span>
+          <span class="ret-timeline-date">${esc(value) || '—'}</span>
+        </div>`;
+      }).join('');
+    }
+
+    // 邮路示意：节点与运送信息交替排列（横向，超出可滚动）
+    if (els.detailRouteMap) {
+      els.detailRouteMap.innerHTML = steps.length === 0
+        ? '<div class="ret-detail-empty">未填写邮路信息</div>'
+        : steps.map((s) => (s.kind === 'node'
+            ? `<span class="ret-route-node"><span class="ret-route-dot"></span><span class="ret-route-name">${esc(s.text) || '（未填途经点）'}</span></span>`
+            : `<span class="ret-route-leg">→${s.text ? `<small>${esc(s.text)}</small>` : ''}</span>`
+          )).join('');
+    }
+
     els.detailRoute.innerHTML = steps.length === 0
       ? '<div class="ret-detail-empty">未填写邮路信息</div>'
       : steps.map(s => (s.kind === 'node'

@@ -1,18 +1,20 @@
 /**
  * 邮戳图片 — 照片画廊
  * ===================
- * 依赖: RecordStore（日戳记录，图片路径在记录的 photos 字段里）
+ * 依赖: RecordStore（日戳记录）、MeterStore（邮资机戳记录）
  *
  * 数据来源
  * --------
- *   「录入日戳 → 日戳图片」保存的图片不会单独登记，只把**相对路径**写进
- *   记录的 photos: string[]（相对 images/，见 img-export.js）。
- *   所以画廊不需要额外的索引：把所有记录的 photos 摊平，就是全部邮戳图片。
+ *   「录入日戳 → 日戳图片」与「邮资机戳 → 邮资机戳图片」保存的图片都不单独登记，
+ *   只把**相对路径**写进记录的 photos: string[]（相对 images/，见 img-export.js）。
+ *   所以画廊不需要额外的索引：把两张表的 photos 摊平，就是全部邮戳图片。
  *
  * 版式
  * ----
- *   每个展示区是正方形（CSS aspect-ratio: 1/1），图片 object-fit: cover 裁切填满，
- *   底部叠一条半透明标题（邮局名 + 盖销日期）。
+ *   每个展示区由「图片 + 图片下方独立说明区」两部分组成：
+ *   日戳与邮资机戳图片使用**相同高度**，宽度按各自比例展开 ——
+ *   日戳 1:1（宽 = 高），邮资机戳 5:2（宽 = 高 × 2.5）。
+ *   图片 object-fit: cover 裁切填满，文字说明不再压在图片上。
  *   单击展示区打开详情：大图 + 该图片所属记录的字段；← / → 在筛选结果里逐张翻阅。
  *
  * 对外接口（app.js 使用）: window.GalleryPage
@@ -25,9 +27,9 @@
   const SORT_PREF_KEY = 'postmark_gallery_sort';
 
   const SORT_OPTIONS = [
-    { key: 'date-desc', label: '盖销日期（新 → 旧）' },
-    { key: 'date-asc', label: '盖销日期（旧 → 新）' },
-    { key: 'office-asc', label: '邮局名称（A → Z）' },
+    { key: 'date-desc', label: '日期（新 → 旧）' },
+    { key: 'date-asc', label: '日期（旧 → 新）' },
+    { key: 'office-asc', label: '网点名称（A → Z）' },
     { key: 'created-desc', label: '录入时间（新 → 旧）' },
   ];
 
@@ -96,9 +98,23 @@
     return s;
   }
 
+  function isMeterItem(it) {
+    return Boolean(it && it.kind === 'meter');
+  }
+
+  /** 日戳记录看 postOffice / cancelDate，邮资机戳看 printOffice / printDate */
+  function itemOffice(it) {
+    return isMeterItem(it) ? it.record.printOffice : it.record.postOffice;
+  }
+
+  function itemDate(it) {
+    return isMeterItem(it) ? it.record.printDate : it.record.cancelDate;
+  }
+
   /** 排序用的日期键：统一成 10 位数字，非数字格式就整体剔除 */
-  function dateKey(rec) {
-    return String(rec.cancelDate == null ? '' : rec.cancelDate).replace(/\D/g, '');
+  function dateKey(it) {
+    const val = itemDate(it);
+    return String(val == null ? '' : val).replace(/\D/g, '');
   }
 
   function locOf(rec) {
@@ -128,17 +144,18 @@
   }
 
   // ============================================================
-  // 数据：把记录里的 photos 摊平成图片列表
+  // 数据：把两张记录表里的 photos 摊平成图片列表
   // ============================================================
   function buildItems() {
     const items = [];
-    if (typeof RecordStore === 'undefined') return items;
-    for (const rec of RecordStore.getAll()) {
+
+    function pushPhotos(kind, rec) {
       const photos = Array.isArray(rec.photos)
         ? rec.photos.filter((p) => typeof p === 'string' && p.trim())
         : [];
       photos.forEach((relPath, i) => {
         items.push({
+          kind,
           record: rec,
           relPath,
           fileName: fileNameOf(relPath),
@@ -146,6 +163,13 @@
           photoCount: photos.length,
         });
       });
+    }
+
+    if (typeof RecordStore !== 'undefined') {
+      RecordStore.getAll().forEach((rec) => pushPhotos('record', rec));
+    }
+    if (typeof MeterStore !== 'undefined') {
+      MeterStore.getAll().forEach((rec) => pushPhotos('meter', rec));
     }
     return items;
   }
@@ -160,24 +184,28 @@
     return stamps.map(s => `${s || '无戳号'}${material}`).join(separator || '、');
   }
 
-  function haystack(rec) {
-    return [
-      rec.postOffice, rec.institutionCode, rec.postalCode,
-      stampText(rec, ' '),
-      Array.isArray(rec.scenicNames) ? rec.scenicNames.join(' ') : '',
+  function haystack(it) {
+    const rec = it.record;
+    const parts = [
+      rec.postOffice, rec.printOffice, rec.institutionCode, rec.postalCode,
       rec.notes, rec.province, rec.city, rec.district,
-    ].map((v) => String(v == null ? '' : v)).join(' ').toLowerCase();
+    ];
+    if (isMeterItem(it)) {
+      parts.push(rec.meterModel, rec.meterNo, rec.meterUpperRing, rec.meterLowerRing, rec.meterHeader);
+    } else {
+      parts.push(stampText(rec, ' '));
+      parts.push(Array.isArray(rec.scenicNames) ? rec.scenicNames.join(' ') : '');
+    }
+    return parts.map((v) => String(v == null ? '' : v)).join(' ').toLowerCase();
   }
 
-  /** 排序：日期类空值一律垫底，同值再按邮局名 / 文件名稳定排列 */
+  /** 排序：日期类空值一律垫底，同值再按网点名 / 文件名稳定排列 */
   function compareItems(a, b) {
-    const x = a.record;
-    const y = b.record;
     let result = 0;
 
     if (sortKey === 'date-desc' || sortKey === 'date-asc') {
-      const dx = dateKey(x);
-      const dy = dateKey(y);
+      const dx = dateKey(a);
+      const dy = dateKey(b);
       if (!dx && !dy) result = 0;
       else if (!dx) result = 1;
       else if (!dy) result = -1;
@@ -187,13 +215,13 @@
         result = sortKey === 'date-desc' ? -sign : sign;
       }
     } else if (sortKey === 'office-asc') {
-      result = String(x.postOffice || '').localeCompare(String(y.postOffice || ''), 'zh-Hans-CN');
+      result = String(itemOffice(a) || '').localeCompare(String(itemOffice(b) || ''), 'zh-Hans-CN');
     } else {
-      result = String(y.createdAt || '').localeCompare(String(x.createdAt || ''));
+      result = String(b.record.createdAt || '').localeCompare(String(a.record.createdAt || ''));
     }
 
     if (result !== 0) return result;
-    const byName = String(x.postOffice || '').localeCompare(String(y.postOffice || ''), 'zh-Hans-CN');
+    const byName = String(itemOffice(a) || '').localeCompare(String(itemOffice(b) || ''), 'zh-Hans-CN');
     return byName !== 0 ? byName : String(a.relPath).localeCompare(String(b.relPath));
   }
 
@@ -202,7 +230,7 @@
     const list = allItems.filter((it) => {
       if (provinceFilter && it.record.province !== provinceFilter) return false;
       if (!term) return true;
-      return haystack(it.record).includes(term);
+      return haystack(it).includes(term);
     });
     list.sort(compareItems);
     return list;
@@ -236,22 +264,32 @@
   // ============================================================
   function tileHtml(it, idx) {
     const r = it.record;
-    const date = fmtCancelDate(r.cancelDate);
-    const stamps = stampText(r, ',') ? ` · ${stampText(r, ',')}` : '';
+    const meter = isMeterItem(it);
+    const office = itemOffice(it);
+    const date = fmtCancelDate(itemDate(it));
+    const extra = meter
+      ? [r.meterModel, r.meterNo].filter(Boolean).join(' · ')
+      : stampText(r, ',');
+    const extraText = extra ? ` · ${extra}` : '';
     const countBadge = it.photoCount > 1
       ? `<span class="gallery-tile-count">${it.photoIndex}/${it.photoCount}</span>`
       : '';
-    const tip = [r.postOffice || '(无名称)', date || '未记录盖销日期', locOf(r)]
-      .filter(Boolean).join('\n');
+    const tip = [
+      office || '(无名称)',
+      date || (meter ? '未记录打印日期' : '未记录盖销日期'),
+      locOf(r),
+    ].filter(Boolean).join('\n');
 
     return `
-      <button type="button" class="gallery-tile" data-idx="${idx}" title="${escAttr(tip)}">
-        <img src="${escAttr(photoUrl(it.relPath))}" alt="${escAttr(r.postOffice || '邮戳图片')}" loading="lazy">
-        <span class="gallery-tile-fallback">图片缺失</span>
-        ${countBadge}
+      <button type="button" class="gallery-tile${meter ? ' gallery-tile-meter' : ''}" data-idx="${idx}" title="${escAttr(tip)}">
+        <span class="gallery-tile-media">
+          <img src="${escAttr(photoUrl(it.relPath))}" alt="${escAttr(office || '邮戳图片')}" loading="lazy">
+          <span class="gallery-tile-fallback">图片缺失</span>
+          ${countBadge}
+        </span>
         <span class="gallery-tile-cap">
-          <span class="gallery-tile-name">${esc(r.postOffice) || '(无名称)'}</span>
-          <span class="gallery-tile-meta">${esc(date) || '未记录盖戳日期'}${esc(stamps)}</span>
+          <span class="gallery-tile-name">${esc(office) || '(无名称)'}</span>
+          <span class="gallery-tile-meta">${esc(date) || (meter ? '未记录打印日期' : '未记录盖戳日期')}${esc(extraText)}</span>
         </span>
       </button>`;
   }
@@ -276,7 +314,7 @@
 
     viewItems = currentView();
     const totalImages = allItems.length;
-    const totalRecords = new Set(allItems.map((it) => it.record.id)).size;
+    const totalRecords = new Set(allItems.map((it) => `${it.kind}:${it.record.id}`)).size;
 
     if (totalImages === 0) {
       els.count.textContent = '共 0 张';
@@ -290,7 +328,7 @@
       els.grid.innerHTML = '';
       els.empty.style.display = 'block';
       els.empty.textContent = totalImages === 0
-        ? '暂无邮戳图片。请先在「录入日戳 → 日戳图片」里上传图片并保存记录。'
+        ? '暂无邮戳图片。请先在「录入日戳 → 日戳图片」或「邮资机戳 → 邮资机戳图片」里上传图片并保存记录。'
         : '没有符合条件的图片';
       // 结果变了，原来打开的详情可能已经对不上号
       if (detailOpen) closeDetail();
@@ -321,11 +359,13 @@
     const it = viewItems[detailIndex];
     if (!it || !els.detailList) return;
     const r = it.record;
+    const meter = isMeterItem(it);
+    const office = itemOffice(it);
 
-    els.detailTitle.textContent = r.postOffice || '邮戳图片';
+    els.detailTitle.textContent = office || '邮戳图片';
     if (els.figure) els.figure.classList.remove('gallery-detail-missing');
     els.detailImg.src = photoUrl(it.relPath);
-    els.detailImg.alt = r.postOffice || '邮戳图片';
+    els.detailImg.alt = office || '邮戳图片';
     els.detailPos.textContent = `第 ${detailIndex + 1} / ${viewItems.length} 张`
       + (it.photoCount > 1 ? ` · 本条记录第 ${it.photoIndex} / ${it.photoCount} 张` : '');
 
@@ -335,7 +375,7 @@
     if (els.detailNext) els.detailNext.style.display = showNav ? '' : 'none';
 
     els.detailHead.innerHTML =
-      `<div class="gallery-detail-office">${esc(r.postOffice) || '(无名称)'}</div>`
+      `<div class="gallery-detail-office">${esc(office) || '(无名称)'}</div>`
       + `<div class="gallery-detail-loc">${esc(locOf(r)) || '-'}</div>`;
 
     /** 值为空且没有占位文案时整行不渲染；有占位文案则显示成灰色说明 */
@@ -349,22 +389,34 @@
     }
 
     const rows = [];
-    rows.push(row('邮政编码', r.postalCode, '-'));
-    rows.push(row('机构号', r.institutionCode, '-'));
-    rows.push(row('邮局类型/状态', STATUS_LABEL[r.status] || r.status, '-'));
-    rows.push(row('盖销日期', fmtCancelDate(r.cancelDate), '-'));
-    rows.push(row('戳号 / 材质', stampText(r, '、')));
-    if (r.hasScenicPostmark) {
-      rows.push(row('风景（文化）日戳',
-        Array.isArray(r.scenicNames) ? r.scenicNames.join('、') : '', '（已标记，未填名称）'));
+    if (meter) {
+      rows.push(row('打印日期', fmtCancelDate(r.printDate), '-'));
+      rows.push(row('型号', r.meterModel, '-'));
+      rows.push(row('编号', r.meterNo, '-'));
+      rows.push(row('上环', r.meterUpperRing, '-'));
+      rows.push(row('下环', r.meterLowerRing, '-'));
+      rows.push(row('表头', r.meterHeader, '-'));
+      rows.push(row('打印网点', r.printOffice, '-'));
+      rows.push(row('图片文件', it.fileName));
+      rows.push(row('备注', r.notes, '无'));
+    } else {
+      rows.push(row('邮政编码', r.postalCode, '-'));
+      rows.push(row('机构号', r.institutionCode, '-'));
+      rows.push(row('邮局类型/状态', STATUS_LABEL[r.status] || r.status, '-'));
+      rows.push(row('盖销日期', fmtCancelDate(r.cancelDate), '-'));
+      rows.push(row('戳号 / 材质', stampText(r, '、')));
+      if (r.hasScenicPostmark) {
+        rows.push(row('风景（文化）日戳',
+          Array.isArray(r.scenicNames) ? r.scenicNames.join('、') : '', '（已标记，未填名称）'));
+      }
+      if (r.hasPostageMeter) {
+        const meterInfo = [r.meterModel, r.meterNo, r.meterHeader, r.meterLowerRing]
+          .filter(Boolean).join(' · ');
+        rows.push(row('邮资机', meterInfo, '（已标记，未填型号 / 编号）'));
+      }
+      rows.push(row('图片文件', it.fileName));
+      rows.push(row('备注', r.notes, '无'));
     }
-    if (r.hasPostageMeter) {
-      const meter = [r.meterModel, r.meterNo, r.meterHeader, r.meterLowerRing]
-        .filter(Boolean).join(' · ');
-      rows.push(row('邮资机', meter, '（已标记，未填型号 / 编号）'));
-    }
-    rows.push(row('图片文件', it.fileName));
-    rows.push(row('备注', r.notes, '无'));
 
     els.detailList.innerHTML = rows.join('');
   }
@@ -476,13 +528,25 @@
       });
     }
 
-    // 「编辑记录」：关掉详情，直接打开这条日戳记录的录入表单
+    // 「编辑记录」：关掉详情，打开图片所属记录的表单（日戳 / 邮资机戳各走各的）
     if (els.detailEdit) {
       els.detailEdit.addEventListener('click', () => {
         const it = viewItems[detailIndex];
         if (!it) return;
-        const rec = (typeof RecordStore !== 'undefined') ? RecordStore.getById(it.record.id) : null;
+        const id = it.record.id;
+        const meter = isMeterItem(it);
         closeDetail();
+
+        if (meter) {
+          const rec = (typeof MeterStore !== 'undefined') ? MeterStore.getById(id) : null;
+          if (!rec) { refresh(); return; }
+          if (typeof MeterList !== 'undefined' && typeof MeterList.openForm === 'function') {
+            MeterList.openForm(rec);
+          }
+          return;
+        }
+
+        const rec = (typeof RecordStore !== 'undefined') ? RecordStore.getById(id) : null;
         if (!rec) { refresh(); return; }
         if (typeof EntryForm !== 'undefined' && typeof EntryForm.open === 'function') {
           EntryForm.open(rec);
@@ -498,13 +562,17 @@
     });
 
     // 记录变化（新增 / 编辑 / 删除 / 导入）→ 本页可见时立即刷新
+    const refreshIfVisible = () => {
+      if (!els || !els.page) return;
+      // 页面默认 display:none 是写在样式表里的，没有内联样式 —— 必须看计算值
+      if (window.getComputedStyle(els.page).display === 'none') return;
+      refresh();
+    };
     if (typeof RecordStore !== 'undefined' && typeof RecordStore.onChange === 'function') {
-      RecordStore.onChange(() => {
-        if (!els || !els.page) return;
-        // 页面默认 display:none 是写在样式表里的，没有内联样式 —— 必须看计算值
-        if (window.getComputedStyle(els.page).display === 'none') return;
-        refresh();
-      });
+      RecordStore.onChange(refreshIfVisible);
+    }
+    if (typeof MeterStore !== 'undefined' && typeof MeterStore.onChange === 'function') {
+      MeterStore.onChange(refreshIfVisible);
     }
   }
 

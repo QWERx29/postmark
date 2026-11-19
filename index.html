@@ -339,7 +339,7 @@
           <div id="f-photo-list" class="photo-list"></div>
           <div class="photo-actions">
             <button type="button" id="f-photo-add" class="btn-small">+ 上传图片</button>
-            <span class="photo-hint">支持 JPG / PNG / WebP / BMP，单张不超过 50 MB；可多选，逐张编辑后保存</span>
+            <span class="photo-hint">支持 JPG / PNG / WebP / BMP，单张不超过 50 MB；可多选，上传后自动保存</span>
           </div>
           <input type="file" id="f-photo-input" accept="image/jpeg,image/png,image/webp,image/bmp,.jpg,.jpeg,.jfif,.jpe,.png,.webp,.bmp" multiple style="display:none">
         </div>
@@ -354,7 +354,7 @@
       <!-- 按钮 -->
       <div class="form-actions">
         <button type="button" id="f-cancel" class="btn-cancel">取消</button>
-        <button type="button" id="f-submit-continue" class="btn-secondary" title="保存后保留省 / 市 / 县 / 日期，继续录入下一张">保存并继续</button>
+        <button type="button" id="f-submit-continue" class="btn-secondary" title="保存后只保留省 / 市 / 县 / 日期，清空网点名称、邮编、机构号，继续录入下一张">保存并继续</button>
         <button type="submit" id="f-submit" class="btn-primary">保存</button>
       </div>
     </form>
@@ -376,7 +376,17 @@
       <select id="f-records-district" class="form-select" disabled>
         <option value="">全部区县</option>
       </select>
-      <input type="text" id="f-records-search" class="form-input" placeholder="搜索邮局名称...">
+      <input type="text" id="f-records-search" class="form-input" placeholder="搜索邮局 / 机构号 / 邮编 / 备注 / 戳号 / 邮资机..." autocomplete="off">
+      <select id="f-records-sort" class="form-select" title="排序方式">
+        <option value="created">录入时间</option>
+        <option value="cancel">盖销日期</option>
+        <option value="office">邮局名称</option>
+        <option value="inst">机构号</option>
+      </select>
+      <button type="button" id="btn-records-sort-dir" class="btn-small" title="切换升序 / 降序">↓ 降序</button>
+      <button type="button" id="btn-records-advanced" class="btn-small" title="按状态 / 照片 / 机戳 / 日期范围筛选">高级筛选</button>
+      <span id="records-filter-badge" class="records-filter-badge" hidden>0</span>
+      <button type="button" id="btn-records-filter-clear" class="btn-small" hidden>清除筛选</button>
     </div>
     <div id="records-actions">
       <span id="batch-bar" style="display:none;">
@@ -392,14 +402,16 @@
       <button id="btn-import-excel" class="btn-small" title="从 Excel 导入">导入 Excel</button>
       <input type="file" id="f-import-excel-file" accept=".xlsx,.xls" style="display:none">
       <button id="btn-excel-template" class="btn-small" title="下载 Excel 导入模板">Excel 模板</button>
-      <button id="btn-print-records" class="btn-small" title="按省 / 年 / 邮局打印贴片">打印 / 贴片</button>
       <button id="btn-clear-records" class="btn-small btn-danger" title="清空所有记录">清空</button>
       <button id="btn-records-back" class="btn-secondary">← 返回</button>
     </div>
   </div>
   <div id="records-pager" class="records-pager" hidden>
     <span id="records-pager-info"></span>
-    <button type="button" id="btn-records-load-more" class="btn-small">加载更多</button>
+    <div class="records-pager-actions">
+      <button type="button" id="btn-records-prev" class="btn-small" title="上一页">← 上一页</button>
+      <button type="button" id="btn-records-next" class="btn-small" title="下一页">下一页 →</button>
+    </div>
   </div>
   <div id="records-table-wrapper">
     <table id="records-table">
@@ -413,7 +425,7 @@
           <th>邮局名称</th>
           <th style="width:140px;">盖销日期</th>
           <th style="width:140px;">戳号</th>
-          <th style="width:100px;">操作</th>
+          <th style="width:150px;">操作</th>
         </tr>
       </thead>
     </table>
@@ -428,10 +440,57 @@
           <col>
           <col style="width:140px;">
           <col style="width:140px;">
-          <col style="width:100px;">
+          <col style="width:150px;">
         </colgroup>
         <tbody id="records-tbody"></tbody>
       </table>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 全部记录 · 高级筛选 ===== -->
+<div id="records-filter-overlay" class="modal-overlay">
+  <div class="modal-container">
+    <div class="modal-header">
+      <h2>高级筛选</h2>
+      <button type="button" class="modal-close" id="rf-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="maint-hint">与工具栏的省 / 市 / 县、关键字同时生效；日期范围按盖销日期（不含时间）比较。</p>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label>邮局类型 / 状态</label>
+          <select id="rf-status" class="form-select">
+            <option value="">全部状态</option>
+            <option value="open">营业</option>
+            <option value="delivery">投递部</option>
+            <option value="closed">已撤销</option>
+            <option value="themed">主题邮局</option>
+            <option value="temporary">临时邮局</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>盖销日期从</label>
+          <input type="date" id="rf-date-from" class="form-input">
+        </div>
+        <div class="form-group">
+          <label>盖销日期到</label>
+          <input type="date" id="rf-date-to" class="form-input">
+        </div>
+      </div>
+
+      <div class="form-group records-filter-checks">
+        <label class="checkbox-label"><input type="checkbox" id="rf-has-photos"> 只看有照片的记录</label>
+        <label class="checkbox-label"><input type="checkbox" id="rf-has-meter"> 只看有邮资机的记录</label>
+        <label class="checkbox-label"><input type="checkbox" id="rf-has-scenic"> 只看有风景 / 文化日戳的记录</label>
+      </div>
+
+      <div class="form-actions">
+        <button type="button" id="rf-reset" class="btn-cancel">重置</button>
+        <button type="button" id="rf-cancel" class="btn-cancel">取消</button>
+        <button type="button" id="rf-apply" class="btn-primary">应用筛选</button>
+      </div>
     </div>
   </div>
 </div>
@@ -503,7 +562,7 @@
       <option value="">全部省份</option>
     </select>
     <input type="text" id="f-gallery-search" class="form-input"
-           placeholder="搜索邮局名称 / 机构号 / 邮编 / 戳号 / 备注" autocomplete="off">
+           placeholder="搜索网点名称 / 机构号 / 邮编 / 戳号 / 型号 / 编号 / 备注" autocomplete="off">
     <label class="meter-sort-label" for="f-gallery-sort">排序</label>
     <select id="f-gallery-sort" class="form-select" title="选择排序方式"></select>
   </div>
@@ -756,6 +815,22 @@
         </div>
       </div>
 
+      <!-- 邮资机戳图片（与「日戳图片」同一套上传 / 存储方式） -->
+      <div class="form-section">
+        <label class="checkbox-label" style="cursor:default;">
+          <span>邮资机戳图片</span>
+          <span class="photo-count" id="mf-photo-count"></span>
+        </label>
+        <div id="mf-photo-area" class="photo-area">
+          <div id="mf-photo-list" class="photo-list meter-photo-list"></div>
+          <div class="photo-actions">
+            <button type="button" id="mf-photo-add" class="btn-small">+ 上传图片</button>
+            <span class="photo-hint">支持 JPG / PNG / WebP / BMP，单张不超过 50 MB；可多选，上传后自动保存</span>
+          </div>
+          <input type="file" id="mf-photo-input" accept="image/jpeg,image/png,image/webp,image/bmp,.jpg,.jpeg,.jfif,.jpe,.png,.webp,.bmp" multiple style="display:none">
+        </div>
+      </div>
+
       <div class="form-group">
         <label>备注</label>
         <textarea id="mf-notes" class="form-textarea" rows="2" placeholder="备注信息（选填）"></textarea>
@@ -819,44 +894,40 @@
   </div>
 </div>
 
-<!-- ===== 打印 / 贴片 ===== -->
-<div id="print-overlay" class="modal-overlay">
+<!-- ===== 记录详情弹窗 ===== -->
+<div id="record-detail-overlay" class="record-detail-overlay">
+  <aside class="record-drawer" role="dialog" aria-modal="true" aria-labelledby="record-detail-title">
+    <div class="record-drawer-head">
+      <div class="record-drawer-heading">
+        <h2 id="record-detail-title">记录详情</h2>
+        <div id="record-detail-sub" class="record-drawer-sub"></div>
+      </div>
+      <button type="button" class="modal-close" id="record-detail-close">&times;</button>
+    </div>
+    <div class="record-drawer-body" id="record-detail-body"></div>
+    <div class="record-drawer-actions">
+      <button type="button" id="record-detail-edit" class="btn-primary">编辑记录</button>
+      <button type="button" id="record-detail-ok" class="btn-cancel">关闭</button>
+    </div>
+  </aside>
+</div>
+
+<div id="record-photo-overlay" class="record-photo-overlay">
+  <img id="record-photo-img" alt="">
+  <button type="button" id="record-photo-close" class="record-photo-close" title="关闭">&times;</button>
+</div>
+
+<!-- ===== 统计 · 地图点位记录 ===== -->
+<div id="stat-map-records-overlay" class="modal-overlay">
   <div class="modal-container">
     <div class="modal-header">
-      <h2>打印 / 贴片</h2>
-      <button type="button" class="modal-close" id="print-close">&times;</button>
+      <h2 id="stat-map-records-title">收集记录</h2>
+      <button type="button" class="modal-close" id="stat-map-records-close">&times;</button>
     </div>
     <div class="modal-body">
-      <p class="maint-hint" id="print-summary"></p>
-
-      <div class="form-row">
-        <div class="form-group">
-          <label>分组方式</label>
-          <select id="print-group" class="form-select"></select>
-        </div>
-        <div class="form-group">
-          <label>每行张数</label>
-          <select id="print-cols" class="form-select"></select>
-        </div>
-      </div>
-
-      <div class="form-group print-options">
-        <label class="checkbox-label">
-          <input type="checkbox" id="print-with-images" checked> 包含图片（每条记录取第一张缩略图）
-        </label>
-        <label class="checkbox-label">
-          <input type="checkbox" id="print-only-photos"> 只打印有图片的记录
-        </label>
-      </div>
-
-      <p class="maint-hint">
-        按当前「全部记录」页的筛选结果排版；打印对话框里选择「另存为 PDF」即可得到贴片 PDF。
-        分组标题不会落单，卡片不会被跨页切开。
-      </p>
-
+      <div id="stat-map-records-list" class="stat-map-records-list"></div>
       <div class="form-actions">
-        <button type="button" id="print-cancel" class="btn-cancel">取消</button>
-        <button type="button" id="print-start" class="btn-primary">开始打印</button>
+        <button type="button" id="stat-map-records-ok" class="btn-primary">关闭</button>
       </div>
     </div>
   </div>
@@ -1152,6 +1223,7 @@
     <h2>数据统计</h2>
     <div class="statistics-actions">
       <span class="statistics-hint">汇总本机日戳、邮资机戳、邮件、退信与邮戳图片，按维度分页查看</span>
+      <button type="button" id="btn-statistics-export" class="btn-small" title="把当前分页里的图表导出为 PNG">导出 PNG</button>
       <button type="button" id="btn-statistics-refresh" class="btn-small" title="重新汇总当前数据">刷新</button>
       <button type="button" id="btn-statistics-back" class="btn-secondary">← 返回总览</button>
     </div>
@@ -1202,6 +1274,28 @@
       </div>
     </div>
 
+    <!-- 收集目标（本机保存，不参与备份） -->
+    <section class="stat-card stat-goal-card">
+      <div class="stat-card-head">
+        <h3>收集目标</h3>
+        <span class="stat-card-note" id="stat-goal-note">目标只保存在本机</span>
+      </div>
+      <div class="stat-goal-body">
+        <label class="stat-goal-field">年度目标
+          <input type="number" id="stat-goal-annual" class="form-input" min="0" step="1" placeholder="0">
+        </label>
+        <label class="stat-goal-field">月度目标
+          <input type="number" id="stat-goal-monthly" class="form-input" min="0" step="1" placeholder="0">
+        </label>
+        <div class="stat-goal-progress">
+          <div class="stat-goal-row"><span>年度进度</span><span id="stat-goal-annual-text">—</span></div>
+          <div class="stat-goal-bar"><i id="stat-goal-annual-bar"></i></div>
+          <div class="stat-goal-row"><span>本月进度</span><span id="stat-goal-monthly-text">—</span></div>
+          <div class="stat-goal-bar"><i id="stat-goal-monthly-bar"></i></div>
+        </div>
+      </div>
+    </section>
+
     <!-- 维度分页 -->
     <div class="stat-tabs" id="statistics-tabs">
       <div class="stat-tab-bar" role="tablist" aria-label="统计维度">
@@ -1227,6 +1321,14 @@
           <span class="stat-card-note" id="stat-trend-note"></span>
         </div>
         <div id="stat-chart-trend" class="stat-chart trend"></div>
+      </section>
+
+      <section class="stat-card stat-span-2">
+        <div class="stat-card-head">
+          <h3>收集网点分布</h3>
+          <span class="stat-card-note" id="stat-geomap-note"></span>
+        </div>
+        <div id="stat-chart-geomap" class="stat-chart stat-map"></div>
       </section>
 
       <section class="stat-card stat-span-2">
@@ -1556,6 +1658,7 @@
       <div class="po-detail-head" id="po-detail-head"></div>
       <div class="po-detail-list" id="po-detail-list"></div>
       <div class="form-actions">
+        <button type="button" id="po-detail-add-record" class="btn-secondary" title="用该网点的省 / 市 / 县 / 名称 / 邮编新建一条日戳记录">录入日戳</button>
         <button type="button" id="po-detail-ok" class="btn-primary">关闭</button>
       </div>
     </div>
@@ -1873,7 +1976,11 @@
           <input type="button" class="tool-btn-primary" value="查询" onclick="doTrack()" />
         </div>
         <!--用于显示查询结果的容器。-->
+        <div id="mail-query-context" class="mail-query-context" hidden></div>
         <div id="YQContainer"></div>
+        <div class="form-actions mail-query-actions" id="mail-query-actions" hidden>
+          <button type="button" id="btn-mail-query-delivered" class="btn-secondary">标记为妥收</button>
+        </div>
 
         <!--脚本代码可放于页面底部，等到页面最后执行。-->
         <script type="text/javascript" src="//www.17track.net/externalcall.js"></script>
@@ -1966,6 +2073,8 @@
           <span id="mail-list-count" class="mail-list-count">共 0 条</span>
           <input type="text" id="mail-list-search" class="form-input" placeholder="搜索号码 / 种类 / 寄出寄达 / 内容" autocomplete="off">
           <button type="button" id="btn-mail-add" class="btn-primary tool-btn-primary" style="display:none;">+ 新增</button>
+          <button type="button" id="btn-mail-overdue" class="btn-small" title="只看超期的待发 / 在途邮件">超期 0</button>
+          <button type="button" id="btn-mail-batch-query" class="btn-small" title="依次查询当前列表里的挂号信号码">批量查询</button>
           <button type="button" id="btn-mail-export-json" class="btn-small" title="导出当前状态的邮件为 JSON">导出 JSON</button>
           <button type="button" id="btn-mail-export-excel" class="btn-small" title="导出当前状态的邮件为 Excel">导出 Excel</button>
         </div>
@@ -1980,7 +2089,7 @@
               <col style="width:130px;">
               <col style="width:130px;">
               <col>
-              <col style="width:250px;">
+              <col style="width:290px;">
             </colgroup>
             <thead>
               <tr>
@@ -2003,7 +2112,7 @@
                 <col style="width:130px;">
                 <col style="width:130px;">
                 <col>
-                <col style="width:250px;">
+                <col style="width:290px;">
               </colgroup>
               <tbody id="mail-tbody"></tbody>
             </table>
@@ -2049,8 +2158,8 @@
         <div class="form-group">
           <label>邮件种类</label>
           <select id="m-type" class="form-select">
+            <option value="平信" selected>平信</option>
             <option value="挂号信">挂号信</option>
-            <option value="平信">平信</option>
           </select>
         </div>
         <div class="form-group">
@@ -2073,7 +2182,7 @@
 
       <div class="form-group">
         <label>内容</label>
-        <textarea id="m-content" class="form-textarea" rows="3" placeholder="邮寄内容（选填）"></textarea>
+        <input type="text" id="m-content" class="form-input" placeholder="邮寄内容（选填）" autocomplete="off">
       </div>
 
       <div class="form-actions">
@@ -2226,7 +2335,15 @@
         <span class="ret-detail-value mr-mono" id="return-detail-mailno"></span>
       </div>
       <div class="ret-detail-block">
-        <div class="ret-detail-label">邮路信息</div>
+        <div class="ret-detail-label">时间轴</div>
+        <div class="ret-timeline" id="return-detail-timeline"></div>
+      </div>
+      <div class="ret-detail-block">
+        <div class="ret-detail-label">邮路示意 <small>按填写顺序，非地理路线</small></div>
+        <div class="ret-route-map" id="return-detail-route-map"></div>
+      </div>
+      <div class="ret-detail-block">
+        <div class="ret-detail-label">途经点明细</div>
         <div class="ret-detail-route" id="return-detail-route"></div>
       </div>
       <div class="ret-detail-block">
@@ -2260,6 +2377,7 @@
 <script src="js/map.js"></script>
 <script src="js/img-naming.js"></script>
 <script src="js/image.js"></script>
+<script src="js/image-upload.js"></script>
 <script>
 /* 自定义对话框 — 替代浏览器原生 alert / confirm */
 const Dialog = {
@@ -2385,7 +2503,7 @@ const Dialog = {
 <script src="js/image-editor.js"></script>
 <script src="js/form.js"></script>
 <script src="js/maintenance.js"></script>
-<script src="js/print.js"></script>
+<script src="js/record-detail.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

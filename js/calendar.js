@@ -152,8 +152,11 @@
       o = o || {};
       const now = new Date();
       selected = o.selected || null;
-      viewY = o.year || (selected && selected.y) || now.getFullYear();
-      viewM = o.month || (selected && selected.m) || now.getMonth() + 1;
+      // 有选中日期时以它为准：即使调用方同时传了 year / month（可能是上一次
+      // 打开时留下的旧值），视图也必须落在选中日期所在的月份，
+      // 否则日历会显示成比记录早一个月的月份。
+      viewY = (selected && selected.y) || o.year || now.getFullYear();
+      viewM = (selected && selected.m) || o.month || now.getMonth() + 1;
       mode = 'day';
 
       if (anchor && anchor !== o.anchor) anchor.classList.remove('active');

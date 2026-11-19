@@ -17,8 +17,13 @@
   /** 当前模块状态 */
   let currentStatus = 'pending';
   let formOpen = false;
+  /** 只看超期（待发 > 7 天 / 在途 > 30 天） */
+  let overdueOnly = false;
   /** 每个状态各自的搜索词（切换模块时互不干扰） */
   const searchTerms = { pending: '', transit: '', delivered: '' };
+
+  /** 超期阈值（天）：待发迟迟没发出、在途迟迟没妥收 */
+  const OVERDUE_DAYS = { pending: 7, transit: 30 };
 
   let els = null;
 
@@ -51,6 +56,8 @@
       fContent: $('m-content'),
       exportJsonBtn: $('btn-mail-export-json'),
       exportExcelBtn: $('btn-mail-export-excel'),
+      overdueBtn: $('btn-mail-overdue'),
+      batchQueryBtn: $('btn-mail-batch-query'),
     };
   }
 
@@ -109,15 +116,70 @@
     return d.innerHTML;
   }
 
-  /** 按当前模块 + 搜索词过滤 */
+  /** 距今多少天（按本地日期，忽略时分秒）；日期无效返回 null */
+  function daysSince(dateStr) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateStr || ''));
+    if (!m) return null;
+    const start = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    if (Number.isNaN(start.getTime())) return null;
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    return Math.floor((today - start) / 86400000);
+  }
+
+  /** 超期天数；未超期 / 状态不适用 / 日期无效时返回 0 */
+  function overdueDays(rec) {
+    const limit = OVERDUE_DAYS[rec && rec.status];
+    if (!limit) return 0;
+    const days = daysSince(rec.sendDate);
+    if (days == null || days <= limit) return 0;
+    return days;
+  }
+
+  /** 当前状态下所有超期条数（不受搜索 / 只看超期影响） */
+  function overdueTotal() {
+    return MailStore.getByStatus(currentStatus).filter(r => overdueDays(r) > 0).length;
+  }
+
+  /** 按当前模块 + 搜索词 + 超期开关过滤 */
   function currentList() {
     const term = (searchTerms[currentStatus] || '').trim().toLowerCase();
-    const list = MailStore.getByStatus(currentStatus);
+    let list = MailStore.getByStatus(currentStatus);
+    if (overdueOnly) list = list.filter(r => overdueDays(r) > 0);
     if (!term) return list;
     return list.filter(r =>
       [r.mailNo, r.mailType, r.fromPlace, r.toPlace, r.content, r.sendDate]
         .some(v => String(v || '').toLowerCase().includes(term))
     );
+  }
+
+  /** 打开「查询」页并带上邮件记录（由 app.js 监听该事件） */
+  function queryRecord(rec) {
+    // 平信无法查询：即使填了号码也不往查询页带（号码只做统计）
+    if (!rec || !MailStore.canQuery(rec.mailType) || !rec.mailNo) return;
+    window.dispatchEvent(new CustomEvent('postmark-query-mail', {
+      detail: { id: rec.id, mailNo: rec.mailNo },
+    }));
+  }
+
+  /** 批量查询当前列表（只查挂号信；平信号码仅统计） */
+  async function batchQuery() {
+    const list = currentList().filter(r => MailStore.canQuery(r.mailType) && String(r.mailNo || '').trim());
+    if (list.length === 0) {
+      await Dialog.alert('当前列表里没有可查询的邮件号码（平信无法查询）。');
+      return;
+    }
+    if (!(await Dialog.confirm(
+      `将依次查询 ${list.length} 个挂号信邮件号码。\n\n`
+      + '每次查询会覆盖查询页的结果；需要保留结果时请先截图或复制。继续吗？'
+    ))) return;
+
+    for (let i = 0; i < list.length; i++) {
+      queryRecord(list[i]);
+      if (i < list.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 1600));
+      }
+    }
   }
 
   // ============================================================
@@ -128,40 +190,66 @@
     const list = currentList();
     const total = MailStore.count(currentStatus);
     const term = (searchTerms[currentStatus] || '').trim();
+    const overdue = overdueTotal();
 
     els.cardTitle.textContent = MailStore.STATUS_LABEL[currentStatus];
-    els.count.textContent = term ? `筛选出 ${list.length} / 共 ${total} 条` : `共 ${total} 条`;
+    let countText = (term || overdueOnly)
+      ? `筛选出 ${list.length} / 共 ${total} 条`
+      : `共 ${total} 条`;
+    if (overdue > 0) countText += ` · 超期 ${overdue} 条`;
+    els.count.textContent = countText;
     // 业务约定：只有「待发」能新增
     els.addBtn.style.display = currentStatus === 'pending' ? '' : 'none';
+
+    // 批量查询只针对挂号信：当前列表没有可查询号码时直接隐藏按钮
+    if (els.batchQueryBtn) {
+      const canBatch = list.some(r => MailStore.canQuery(r.mailType) && String(r.mailNo || '').trim());
+      els.batchQueryBtn.style.display = canBatch ? '' : 'none';
+      els.batchQueryBtn.title = canBatch
+        ? '依次查询当前列表里的挂号信号码'
+        : '当前列表没有可查询的挂号信号码（平信无法查询）';
+    }
+
+    if (els.overdueBtn) {
+      els.overdueBtn.textContent = `超期 ${overdue}`;
+      els.overdueBtn.classList.toggle('is-active', overdueOnly);
+      els.overdueBtn.disabled = overdue === 0 && !overdueOnly;
+      els.overdueBtn.title = `只看超期：待发 > ${OVERDUE_DAYS.pending} 天 / 在途 > ${OVERDUE_DAYS.transit} 天`;
+    }
 
     if (list.length === 0) {
       els.tbody.innerHTML = '';
       els.empty.style.display = '';
       els.empty.textContent = total === 0
         ? `暂无${MailStore.STATUS_LABEL[currentStatus]}邮件`
-        : '没有匹配的记录';
+        : (overdueOnly ? '当前没有超期邮件' : '没有匹配的记录');
       return;
     }
     els.empty.style.display = 'none';
 
-    els.tbody.innerHTML = list.map(r => `
-      <tr>
+    els.tbody.innerHTML = list.map(r => {
+      const days = overdueDays(r);
+      return `
+      <tr${days > 0 ? ' class="is-overdue"' : ''}>
         <td style="width:110px;">${esc(r.sendDate) || '-'}</td>
         <td style="width:110px;">${esc(r.mailType) || '-'}</td>
-        <td style="width:170px;" class="mail-no-cell">${esc(r.mailNo) || '-'}</td>
+        <td style="width:170px;" class="mail-no-cell">${esc(r.mailNo) || '-'}${days > 0 ? `<span class="mail-overdue-badge" title="已超过 ${OVERDUE_DAYS[r.status]} 天">超期 ${days} 天</span>` : ''}</td>
         <td style="width:130px;">${esc(r.fromPlace) || '-'}</td>
         <td style="width:130px;">${esc(r.toPlace) || '-'}</td>
         <td class="mail-content-cell" title="${esc(r.content)}">${esc(r.content) || '-'}</td>
-        <td style="width:250px;" class="mail-actions">${rowActions(r)}</td>
-      </tr>
-    `).join('');
+        <td style="width:290px;" class="mail-actions">${rowActions(r)}</td>
+      </tr>`;
+    }).join('');
 
     bindRowEvents();
   }
 
-  /** 行内操作按钮：编辑 / 状态流转 / 删除 */
+  /** 行内操作按钮：编辑 / 查询 / 状态流转 / 删除 */
   function rowActions(r) {
     const btns = [`<button type="button" class="btn-edit" data-act="edit" data-id="${r.id}">编辑</button>`];
+    if (MailStore.canQuery(r.mailType) && String(r.mailNo || '').trim()) {
+      btns.push(`<button type="button" class="btn-query" data-act="query" data-id="${r.id}" title="在「查询」页打开 17TRACK">查询</button>`);
+    }
     if (r.status === 'pending') {
       btns.push(`<button type="button" class="btn-move" data-act="status" data-id="${r.id}" data-to="transit" title="标记为已发出">发出 →</button>`);
     } else if (r.status === 'transit') {
@@ -185,6 +273,7 @@
     if (!rec) return;
 
     if (act === 'edit') { openForm(rec); return; }
+    if (act === 'query') { queryRecord(rec); return; }
 
     if (act === 'status') {
       const label = MailStore.STATUS_LABEL[to];
@@ -205,8 +294,8 @@
     }
   }
 
-  // 单号查询改由 17TRACK 自带组件承载（见 index.html 的 #YQNum / doTrack()），
-  // 它没有「预填单号」的公开接口，因此列表里的号码不再做成跳转按钮。
+  // 单号查询走 17TRACK 自带组件（见 index.html 的 #YQNum / doTrack()）：
+  // 行内「查询」与「批量查询」通过 postmark-query-mail 事件交给 app.js 切页并预填单号。
 
   // ============================================================
   // 新增 / 编辑表单
@@ -250,6 +339,13 @@
 
   function updateMailNoHint() {
     if (!els || !els.fNoHint) return;
+    // 平信号码只做统计，不按挂号信条码规则提示
+    if (!MailStore.requiresMailNo(els.fType.value)) {
+      els.fNoHint.style.display = 'none';
+      els.fNoHint.textContent = '';
+      els.fNoHint.className = 'mail-no-hint';
+      return;
+    }
     const raw = els.fNo.value.trim();
     if (!raw) {
       els.fNoHint.style.display = 'none';
@@ -377,8 +473,9 @@
       return;
     }
 
-    // 即时校验只是提示：号码格式不对时问一句，仍允许保存（历史数据 / 非标准单号）
-    if (mailNo) {
+    // 即时校验只是提示：号码格式不对时问一句，仍允许保存（历史数据 / 非标准单号）。
+    // 平信号码只做统计，不按挂号信条码规则校验。
+    if (mailNo && MailStore.requiresMailNo(mailType)) {
       const check = validateMailNo(mailNo);
       if (!check.ok) {
         const go = await Dialog.confirm(
@@ -449,6 +546,14 @@
     if (els.exportJsonBtn) els.exportJsonBtn.addEventListener('click', exportJson);
     if (els.exportExcelBtn) els.exportExcelBtn.addEventListener('click', exportExcel);
 
+    if (els.overdueBtn) {
+      els.overdueBtn.addEventListener('click', () => {
+        overdueOnly = !overdueOnly;
+        render();
+      });
+    }
+    if (els.batchQueryBtn) els.batchQueryBtn.addEventListener('click', batchQuery);
+
     // 发出日期：日历弹窗（统一组件，含年历切换）
     els.dateInput.addEventListener('click', toggleCalendar);
 
@@ -469,6 +574,7 @@
   function show(status) {
     if (!els) cacheEls();
     currentStatus = MailStore.STATUSES.includes(status) ? status : 'pending';
+    overdueOnly = false;
     els.search.value = searchTerms[currentStatus] || '';
     render();
   }

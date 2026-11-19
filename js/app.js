@@ -237,6 +237,9 @@
   const mailTrackCard = $('mail-track-card');
   const mailListCard = $('mail-list-card');
   const mailReturnCard = $('mail-return-card');
+  const mailQueryContext = $('mail-query-context');
+  const mailQueryActions = $('mail-query-actions');
+  const btnMailQueryDelivered = $('btn-mail-query-delivered');
   const recordsPage = $('records-page');
   const recordsTbody = $('records-tbody');
   const recordsTbodyScroll = $('records-tbody-scroll');
@@ -247,13 +250,40 @@
   const recordsDistrict = $('f-records-district');
   const recordsPager = $('records-pager');
   const recordsPagerInfo = $('records-pager-info');
-  const btnRecordsLoadMore = $('btn-records-load-more');
-  /** 「全部记录」每次渲染的行数；未筛选时先只渲染这么多 */
-  const RECORDS_PAGE_SIZE = 50;
-  let recordsShown = RECORDS_PAGE_SIZE;
+  const btnRecordsPrev = $('btn-records-prev');
+  const btnRecordsNext = $('btn-records-next');
+  const recordsSort = $('f-records-sort');
+  const btnRecordsSortDir = $('btn-records-sort-dir');
+  const btnRecordsAdvanced = $('btn-records-advanced');
+  const recordsFilterBadge = $('records-filter-badge');
+  const btnRecordsFilterClear = $('btn-records-filter-clear');
+  const recordsFilterOverlay = $('records-filter-overlay');
+  const rfStatus = $('rf-status');
+  const rfDateFrom = $('rf-date-from');
+  const rfDateTo = $('rf-date-to');
+  const rfHasPhotos = $('rf-has-photos');
+  const rfHasMeter = $('rf-has-meter');
+  const rfHasScenic = $('rf-has-scenic');
+  /** 「全部记录」每页条数（分页展示，不再累加） */
+  const RECORDS_PAGE_SIZE = 20;
+  let recordsPageNo = 1;
+  let recordsTotalPages = 1;
   let filterProvince = '';
   let filterCity = '';
   let filterDistrict = '';
+  /** 排序：created | cancel | office | inst；方向 asc | desc */
+  let recordsSortKey = 'created';
+  let recordsSortDir = 'desc';
+  /** 高级筛选（与工具栏的省 / 市 / 县、关键字同时生效） */
+  const advancedFilter = {
+    status: '',
+    dateFrom: '',
+    dateTo: '',
+    hasPhotos: false,
+    hasMeter: false,
+    hasScenic: false,
+  };
+  const RECORDS_SORT_PREF_KEY = 'postmark_records_sort';
   const batchOverlay = $('batch-overlay');
   const batchCountLabel = $('batch-count-label');
 
@@ -345,7 +375,16 @@
     recordsDistrict.innerHTML = '<option value="">全部区县</option>';
     recordsDistrict.disabled = true;
     recordsSearch.value = '';
-    recordsShown = RECORDS_PAGE_SIZE;
+    recordsPageNo = 1;
+    // 高级筛选也一并清掉（排序偏好保留，下次进入仍是用户选的顺序）
+    closeAdvancedFilter();
+    advancedFilter.status = '';
+    advancedFilter.dateFrom = '';
+    advancedFilter.dateTo = '';
+    advancedFilter.hasPhotos = false;
+    advancedFilter.hasMeter = false;
+    advancedFilter.hasScenic = false;
+    resetAdvancedFilterForm();
     setActiveNav('overview');
   }
 
@@ -366,51 +405,171 @@
   }
 
   /**
-   * 渲染「全部记录」。
-   * 未筛选时默认只渲染前 RECORDS_PAGE_SIZE 条，避免一次插入大量 DOM；
-   * 点「加载更多」继续渲染下一页，选择省份 / 搜索时回到第一页。
+   * 「全部记录」分页：每页 RECORDS_PAGE_SIZE 条，只渲染当前页，避免一次插入大量 DOM；
+   * 选择省份 / 搜索 / 排序变化时回到第一页，翻页时保留当前筛选条件。
    */
-  function filterRecords(all, filter) {
-    const term = String(filter == null ? '' : filter).trim();
-    return all.filter(r => {
-      // 文本搜索（邮局名 / 机构号；字段缺失时按空串处理，不抛错）
-      if (term) {
-        const office = String(r.postOffice || '');
-        const inst = String(r.institutionCode || '');
-        if (!office.includes(term) && !inst.includes(term)) return false;
+  // ---- 排序 / 高级筛选 / 搜索 ----
+  function loadRecordsSortPref() {
+    try {
+      const raw = localStorage.getItem(RECORDS_SORT_PREF_KEY);
+      if (!raw) return;
+      const pref = JSON.parse(raw);
+      if (pref && ['created', 'cancel', 'office', 'inst'].includes(pref.key)) recordsSortKey = pref.key;
+      if (pref && (pref.dir === 'asc' || pref.dir === 'desc')) recordsSortDir = pref.dir;
+    } catch (e) { /* 隐私模式 / 脏数据：用默认排序 */ }
+  }
+
+  function saveRecordsSortPref() {
+    try {
+      localStorage.setItem(RECORDS_SORT_PREF_KEY, JSON.stringify({ key: recordsSortKey, dir: recordsSortDir }));
+    } catch (e) { /* 隐私模式忽略 */ }
+  }
+
+  /** 盖销日期统一成数字串（YYYYMMDDHH），用于排序与日期范围比较 */
+  function recordDateDigits(rec) {
+    return String(rec && rec.cancelDate != null ? rec.cancelDate : '').replace(/\D/g, '');
+  }
+
+  function dateInputToDigits(value) {
+    return String(value == null ? '' : value).replace(/\D/g, '').slice(0, 8);
+  }
+
+  /** 搜索范围：邮局 / 机构号 / 邮编 / 省市区 / 备注 / 戳号材质 / 风景戳 / 邮资机 */
+  function recordHaystack(rec) {
+    const stamps = (typeof RecordStore !== 'undefined' && typeof RecordStore.formatStamps === 'function')
+      ? RecordStore.formatStamps(rec, ' ')
+      : (Array.isArray(rec.stampNumbers) ? rec.stampNumbers.join(' ') : '');
+    return [
+      rec.province, rec.city, rec.district, rec.postOffice,
+      rec.institutionCode, rec.postalCode, rec.notes,
+      stamps,
+      Array.isArray(rec.scenicNames) ? rec.scenicNames.join(' ') : '',
+      rec.meterModel, rec.meterNo, rec.meterHeader, rec.meterLowerRing,
+    ].map((v) => String(v == null ? '' : v)).join(' ').toLowerCase();
+  }
+
+  function advancedFilterCount() {
+    let n = 0;
+    if (advancedFilter.status) n++;
+    if (advancedFilter.dateFrom) n++;
+    if (advancedFilter.dateTo) n++;
+    if (advancedFilter.hasPhotos) n++;
+    if (advancedFilter.hasMeter) n++;
+    if (advancedFilter.hasScenic) n++;
+    return n;
+  }
+
+  function hasAnyRecordFilter() {
+    return Boolean(
+      filterProvince || filterCity || filterDistrict
+      || String(recordsSearch.value || '').trim()
+      || advancedFilterCount() > 0
+    );
+  }
+
+  /** 同步排序控件、高级筛选角标与「清除筛选」按钮 */
+  function renderRecordsFilterUI() {
+    if (recordsSort) recordsSort.value = recordsSortKey;
+    if (btnRecordsSortDir) {
+      btnRecordsSortDir.textContent = recordsSortDir === 'asc' ? '↑ 升序' : '↓ 降序';
+      btnRecordsSortDir.title = recordsSortDir === 'asc' ? '当前升序，点击切换为降序' : '当前降序，点击切换为升序';
+    }
+
+    const advCount = advancedFilterCount();
+    if (recordsFilterBadge) {
+      recordsFilterBadge.hidden = advCount === 0;
+      recordsFilterBadge.textContent = advCount;
+      recordsFilterBadge.title = `已启用 ${advCount} 项高级筛选`;
+    }
+    if (btnRecordsAdvanced) btnRecordsAdvanced.classList.toggle('is-active', advCount > 0);
+    if (btnRecordsFilterClear) btnRecordsFilterClear.hidden = !hasAnyRecordFilter();
+  }
+
+  function sortRecords(list) {
+    const dir = recordsSortDir === 'asc' ? 1 : -1;
+    const key = recordsSortKey;
+
+    return list.slice().sort((a, b) => {
+      let va = '';
+      let vb = '';
+      if (key === 'cancel') {
+        va = recordDateDigits(a);
+        vb = recordDateDigits(b);
+      } else if (key === 'office') {
+        va = String(a.postOffice || '');
+        vb = String(b.postOffice || '');
+      } else if (key === 'inst') {
+        va = String(a.institutionCode || '');
+        vb = String(b.institutionCode || '');
+      } else {
+        va = String(a.createdAt || '');
+        vb = String(b.createdAt || '');
       }
-      // 省份筛选
+
+      // 空值永远排在最后，不受升降序影响
+      if (!va && !vb) return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+      if (!va) return 1;
+      if (!vb) return -1;
+      if (va === vb) return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+
+      let cmp;
+      if (key === 'office') cmp = va.localeCompare(vb, 'zh-Hans-CN');
+      else if (key === 'inst') cmp = va.localeCompare(vb, 'zh-Hans-CN', { numeric: true });
+      else cmp = va.localeCompare(vb);
+      return cmp * dir;
+    });
+  }
+
+  function filterRecords(all, filter) {
+    const term = String(filter == null ? '' : filter).trim().toLowerCase();
+    const from = dateInputToDigits(advancedFilter.dateFrom);
+    const to = dateInputToDigits(advancedFilter.dateTo);
+
+    return all.filter(r => {
+      // 文本搜索（范围见 recordHaystack；字段缺失按空串处理）
+      if (term && !recordHaystack(r).includes(term)) return false;
+      // 省份 / 城市 / 区县
       if (filterProvince && r.province !== filterProvince) return false;
-      // 城市筛选
       if (filterCity && r.city !== filterCity) return false;
-      // 区县筛选
       if (filterDistrict && r.district !== filterDistrict) return false;
+      // 高级筛选
+      if (advancedFilter.status && (r.status || 'open') !== advancedFilter.status) return false;
+      if (advancedFilter.hasPhotos && !(Array.isArray(r.photos) && r.photos.some(Boolean))) return false;
+      if (advancedFilter.hasMeter && !r.hasPostageMeter) return false;
+      if (advancedFilter.hasScenic
+        && !r.hasScenicPostmark
+        && !(Array.isArray(r.scenicNames) && r.scenicNames.some(Boolean))) return false;
+      if (from || to) {
+        const d = recordDateDigits(r).slice(0, 8);
+        if (!d) return false;
+        if (from && d < from) return false;
+        if (to && d > to) return false;
+      }
       return true;
     });
   }
 
-  /** 当前「全部记录」页的筛选结果（打印 / 贴片按它排版） */
-  function getFilteredRecords() {
-    return filterRecords(RecordStore.getAll(), recordsSearch.value);
-  }
-
   function renderRecordsTable(filter, options) {
     const opts = options || {};
-    if (opts.reset) recordsShown = RECORDS_PAGE_SIZE;
+    if (opts.reset) recordsPageNo = 1;
 
     const all = RecordStore.getAll();
-    const filtered = filterRecords(all, filter);
+    const filtered = sortRecords(filterRecords(all, filter));
     recordsCount.textContent = `共 ${all.length} 条记录`;
+    renderRecordsFilterUI();
 
     const selectedIds = new Set(getSelectedIds());
     const COLSPAN = 9;
     const total = filtered.length;
-    const shown = Math.min(recordsShown, total);
-    const visible = filtered.slice(0, shown);
+    const totalPages = Math.max(1, Math.ceil(total / RECORDS_PAGE_SIZE));
+    if (recordsPageNo > totalPages) recordsPageNo = totalPages;
+    if (recordsPageNo < 1) recordsPageNo = 1;
+    const start = (recordsPageNo - 1) * RECORDS_PAGE_SIZE;
+    const visible = filtered.slice(start, start + RECORDS_PAGE_SIZE);
 
     if (total === 0) {
       recordsTbody.innerHTML = `<tr><td colspan="${COLSPAN}" style="text-align:center;color:#999;padding:20px;">暂无记录</td></tr>`;
-      renderRecordsPager(0, 0);
+      renderRecordsPager(1, 1, 0);
       updateBatchBar();
       if (opts.reset && recordsTbodyScroll) recordsTbodyScroll.scrollTop = 0;
       return;
@@ -419,7 +578,7 @@
     recordsTbody.innerHTML = visible.map(r => `
       <tr>
         <td style="width:32px;"><input type="checkbox" class="rec-select" data-id="${r.id}"${selectedIds.has(r.id) ? ' checked' : ''}></td>
-        <td style="width:110px;font-family:monospace;font-size:11px;">${r.institutionCode}</td>
+        <td style="width:110px;font-family:monospace;font-size:11px;">${escHtml(r.institutionCode || '')}</td>
         <td style="width:150px;">${escHtml(r.province)}</td>
         <td style="width:150px;">${escHtml(r.city)}</td>
         <td style="width:150px;">${escHtml(r.district || '')}</td>
@@ -427,6 +586,7 @@
         <td style="width:140px;">${fmtCancelDate(r.cancelDate)}</td>
         <td style="width:140px;">${escHtml(RecordStore.formatStampNumbers(r)) || '-'}</td>
         <td style="width:100px;" class="rec-actions">
+          <button class="btn-detail" data-id="${r.id}">详情</button>
           <button class="btn-edit" data-id="${r.id}">编辑</button>
           <button class="btn-del" data-id="${r.id}">删除</button>
         </td>
@@ -436,6 +596,13 @@
     // 行内复选框事件
     recordsTbody.querySelectorAll('.rec-select').forEach(cb => {
       cb.addEventListener('change', updateBatchBar);
+    });
+
+    // 详情按钮（弹窗：照片 / 机戳字段）
+    recordsTbody.querySelectorAll('.btn-detail').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (typeof RecordDetail !== 'undefined') RecordDetail.open(btn.dataset.id);
+      });
     });
 
     // 编辑按钮
@@ -463,16 +630,17 @@
       selectAll.checked = boxes.length > 0 && boxes.every(cb => cb.checked);
     }
 
-    renderRecordsPager(shown, total);
+    renderRecordsPager(recordsPageNo, totalPages, total);
     updateBatchBar();
 
-    // 筛选 / 搜索变化时回到列表顶部
-    if (opts.reset && recordsTbodyScroll) recordsTbodyScroll.scrollTop = 0;
+    // 筛选 / 搜索变化或翻页时回到列表顶部
+    if ((opts.reset || opts.scrollTop) && recordsTbodyScroll) recordsTbodyScroll.scrollTop = 0;
   }
 
-  /** 更新「全部记录」顶部的已显示条数与加载更多按钮 */
-  function renderRecordsPager(shown, total) {
-    if (!recordsPager || !recordsPagerInfo || !btnRecordsLoadMore) return;
+  /** 更新「全部记录」底部分页信息与上一页 / 下一页按钮 */
+  function renderRecordsPager(page, totalPages, total) {
+    if (!recordsPager || !recordsPagerInfo) return;
+    recordsTotalPages = totalPages;
 
     if (total === 0) {
       recordsPager.hidden = true;
@@ -480,8 +648,9 @@
     }
 
     recordsPager.hidden = false;
-    recordsPagerInfo.textContent = `已显示 ${shown} / ${total} 条`;
-    btnRecordsLoadMore.hidden = shown >= total;
+    recordsPagerInfo.textContent = `第 ${page} / ${totalPages} 页 · 共 ${total} 条`;
+    if (btnRecordsPrev) btnRecordsPrev.disabled = page <= 1;
+    if (btnRecordsNext) btnRecordsNext.disabled = page >= totalPages;
   }
 
   function escHtml(s) {
@@ -1076,6 +1245,79 @@
     return el ? el.textContent.trim() : pageKey;
   }
 
+  // ---- 17TRACK 查询联动：从邮件列表带单号过来，并允许手动回写「妥收」 ----
+  let mailQueryRecordId = '';
+
+  function clearMailQueryContext() {
+    mailQueryRecordId = '';
+    if (mailQueryContext) {
+      mailQueryContext.hidden = true;
+      mailQueryContext.textContent = '';
+    }
+    if (mailQueryActions) mailQueryActions.hidden = true;
+    if (btnMailQueryDelivered) btnMailQueryDelivered.hidden = true;
+  }
+
+  function setMailQueryContext(detail) {
+    const d = detail || {};
+    const rec = d.id && typeof MailStore !== 'undefined' ? MailStore.getById(d.id) : null;
+    mailQueryRecordId = rec ? rec.id : '';
+
+    if (!mailQueryContext) return;
+    if (!rec && !d.mailNo) {
+      clearMailQueryContext();
+      return;
+    }
+
+    const status = rec ? (MailStore.STATUS_LABEL[rec.status] || rec.status) : '';
+    mailQueryContext.hidden = false;
+    mailQueryContext.textContent = rec
+      ? `来自邮件记录：${rec.mailNo || '无号码'} · ${status}${rec.sendDate ? ` · 发出 ${rec.sendDate}` : ''}`
+      : `查询单号：${d.mailNo}`;
+
+    const canWriteBack = Boolean(rec && rec.status !== 'delivered');
+    if (mailQueryActions) mailQueryActions.hidden = !canWriteBack;
+    if (btnMailQueryDelivered) btnMailQueryDelivered.hidden = !canWriteBack;
+  }
+
+  window.addEventListener('postmark-query-mail', (e) => {
+    const detail = (e && e.detail) || {};
+    showMailPage('mail-query');
+    const input = $('YQNum');
+    if (input) input.value = detail.mailNo || '';
+    setMailQueryContext(detail);
+
+    setTimeout(() => {
+      if (!detail.mailNo) return;
+      if (typeof window.doTrack !== 'function') {
+        if (mailQueryContext) {
+          mailQueryContext.textContent += '（17TRACK 组件未加载，请检查网络后重试）';
+        }
+        return;
+      }
+      try {
+        window.doTrack();
+      } catch (err) {
+        console.warn('[Mail] 17TRACK 查询失败:', err);
+      }
+    }, 400);
+  });
+
+  if (btnMailQueryDelivered) {
+    btnMailQueryDelivered.addEventListener('click', async () => {
+      if (!mailQueryRecordId || typeof MailStore === 'undefined') return;
+      const rec = MailStore.getById(mailQueryRecordId);
+      if (!rec) { await Dialog.alert('邮件记录已不存在。'); clearMailQueryContext(); return; }
+      if (!(await Dialog.confirm(
+        `确认「${rec.mailNo || '该邮件'}」已经妥收？\n\n`
+        + '这会把邮件状态回写为「妥收」；17TRACK 的结果本身不会被保存。'
+      ))) return;
+      MailStore.setStatus(mailQueryRecordId, 'delivered');
+      await Dialog.alert('已标记为妥收。');
+      setMailQueryContext({ id: mailQueryRecordId, mailNo: rec.mailNo });
+    });
+  }
+
   function showMailPage(pageKey) {
     const route = MAIL_ROUTES[pageKey];
     if (!route) return;
@@ -1112,6 +1354,7 @@
     } else if (route.kind === 'track') {
       // 查询组件是 index.html 里的 17TRACK externalcall.js 组件（#YQNum / doTrack() / #YQContainer）
       mailTrackCard.style.display = '';
+      clearMailQueryContext();
     } else {
       mailPlaceholderCard.style.display = '';
       mailPlaceholderTitle.textContent = `${label} 功能暂未开发`;
@@ -1124,6 +1367,7 @@
     mailPage.style.display = 'none';
     $('main-container').style.display = '';
     $('btn-add-record-fab').style.display = '';
+    clearMailQueryContext();
     setActiveNav('overview');
   }
 
@@ -1144,6 +1388,111 @@
   recordsSearch.addEventListener('input', () => {
     renderRecordsTable(recordsSearch.value.trim(), { reset: true });
   });
+
+  // ---- 排序 ----
+  if (recordsSort) {
+    recordsSort.addEventListener('change', () => {
+      recordsSortKey = recordsSort.value;
+      saveRecordsSortPref();
+      renderRecordsTable(recordsSearch.value.trim(), { reset: true });
+    });
+  }
+  if (btnRecordsSortDir) {
+    btnRecordsSortDir.addEventListener('click', () => {
+      recordsSortDir = recordsSortDir === 'asc' ? 'desc' : 'asc';
+      saveRecordsSortPref();
+      renderRecordsTable(recordsSearch.value.trim(), { reset: true });
+    });
+  }
+
+  // ---- 高级筛选 ----
+  function openAdvancedFilter() {
+    if (!recordsFilterOverlay) return;
+    if (rfStatus) rfStatus.value = advancedFilter.status || '';
+    if (rfDateFrom) rfDateFrom.value = advancedFilter.dateFrom || '';
+    if (rfDateTo) rfDateTo.value = advancedFilter.dateTo || '';
+    if (rfHasPhotos) rfHasPhotos.checked = advancedFilter.hasPhotos;
+    if (rfHasMeter) rfHasMeter.checked = advancedFilter.hasMeter;
+    if (rfHasScenic) rfHasScenic.checked = advancedFilter.hasScenic;
+    recordsFilterOverlay.classList.add('active');
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeAdvancedFilter() {
+    if (!recordsFilterOverlay) return false;
+    const wasOpen = recordsFilterOverlay.classList.contains('active');
+    recordsFilterOverlay.classList.remove('active');
+    document.body.style.overflow = '';
+    return wasOpen;
+  }
+
+  function resetAdvancedFilterForm() {
+    if (rfStatus) rfStatus.value = '';
+    if (rfDateFrom) rfDateFrom.value = '';
+    if (rfDateTo) rfDateTo.value = '';
+    if (rfHasPhotos) rfHasPhotos.checked = false;
+    if (rfHasMeter) rfHasMeter.checked = false;
+    if (rfHasScenic) rfHasScenic.checked = false;
+  }
+
+  function applyAdvancedFilter() {
+    advancedFilter.status = rfStatus ? rfStatus.value : '';
+    advancedFilter.dateFrom = rfDateFrom ? rfDateFrom.value : '';
+    advancedFilter.dateTo = rfDateTo ? rfDateTo.value : '';
+    advancedFilter.hasPhotos = Boolean(rfHasPhotos && rfHasPhotos.checked);
+    advancedFilter.hasMeter = Boolean(rfHasMeter && rfHasMeter.checked);
+    advancedFilter.hasScenic = Boolean(rfHasScenic && rfHasScenic.checked);
+
+    // 起止颠倒时自动交换，避免用户得到空结果却不知道为什么
+    if (advancedFilter.dateFrom && advancedFilter.dateTo
+      && advancedFilter.dateFrom > advancedFilter.dateTo) {
+      const tmp = advancedFilter.dateFrom;
+      advancedFilter.dateFrom = advancedFilter.dateTo;
+      advancedFilter.dateTo = tmp;
+    }
+
+    closeAdvancedFilter();
+    renderRecordsTable(recordsSearch.value.trim(), { reset: true });
+  }
+
+  /** 清除所有筛选（省 / 市 / 县、关键字、高级筛选） */
+  function clearAllRecordFilters() {
+    filterProvince = '';
+    filterCity = '';
+    filterDistrict = '';
+    if (recordsProvince) recordsProvince.value = '';
+    if (recordsCity) { recordsCity.innerHTML = '<option value="">全部城市</option>'; recordsCity.disabled = true; }
+    if (recordsDistrict) { recordsDistrict.innerHTML = '<option value="">全部区县</option>'; recordsDistrict.disabled = true; }
+    if (recordsSearch) recordsSearch.value = '';
+    advancedFilter.status = '';
+    advancedFilter.dateFrom = '';
+    advancedFilter.dateTo = '';
+    advancedFilter.hasPhotos = false;
+    advancedFilter.hasMeter = false;
+    advancedFilter.hasScenic = false;
+    resetAdvancedFilterForm();
+    renderRecordsTable('', { reset: true });
+  }
+
+  if (btnRecordsAdvanced) btnRecordsAdvanced.addEventListener('click', openAdvancedFilter);
+  if (btnRecordsFilterClear) btnRecordsFilterClear.addEventListener('click', clearAllRecordFilters);
+
+  const rfCloseBtn = $('rf-close');
+  const rfCancelBtn = $('rf-cancel');
+  const rfResetBtn = $('rf-reset');
+  const rfApplyBtn = $('rf-apply');
+  if (rfCloseBtn) rfCloseBtn.addEventListener('click', closeAdvancedFilter);
+  if (rfCancelBtn) rfCancelBtn.addEventListener('click', closeAdvancedFilter);
+  if (rfResetBtn) rfResetBtn.addEventListener('click', resetAdvancedFilterForm);
+  if (rfApplyBtn) rfApplyBtn.addEventListener('click', applyAdvancedFilter);
+  if (recordsFilterOverlay) {
+    recordsFilterOverlay.addEventListener('click', (e) => {
+      if (e.target === recordsFilterOverlay) closeAdvancedFilter();
+    });
+  }
+
+  loadRecordsSortPref();
+  renderRecordsFilterUI();
 
   recordsProvince.addEventListener('change', () => {
     filterProvince = recordsProvince.value;
@@ -1166,10 +1515,19 @@
     renderRecordsTable(recordsSearch.value.trim(), { reset: true });
   });
 
-  if (btnRecordsLoadMore) {
-    btnRecordsLoadMore.addEventListener('click', () => {
-      recordsShown += RECORDS_PAGE_SIZE;
-      renderRecordsTable(recordsSearch.value.trim());
+  if (btnRecordsPrev) {
+    btnRecordsPrev.addEventListener('click', () => {
+      if (recordsPageNo <= 1) return;
+      recordsPageNo -= 1;
+      renderRecordsTable(recordsSearch.value.trim(), { scrollTop: true });
+    });
+  }
+
+  if (btnRecordsNext) {
+    btnRecordsNext.addEventListener('click', () => {
+      if (recordsPageNo >= recordsTotalPages) return;
+      recordsPageNo += 1;
+      renderRecordsTable(recordsSearch.value.trim(), { scrollTop: true });
     });
   }
 
@@ -1224,8 +1582,11 @@
       if (window.GalleryPage && window.GalleryPage.closeDetail()) return;
       // 数据安全页里的挂接 / 预览弹窗叠在页面上
       if (window.MaintenancePage && window.MaintenancePage.closeModal()) return;
-      // 打印 / 贴片选项弹窗
-      if (window.PrintPage && window.PrintPage.close()) return;
+      // 记录详情弹窗 / 高级筛选弹窗
+      if (window.RecordDetail && window.RecordDetail.close()) return;
+      if (closeAdvancedFilter()) return;
+      // 统计页 · 地图点位记录弹窗
+      if (window.StatisticsPage && window.StatisticsPage.closeMapRecords && window.StatisticsPage.closeMapRecords()) return;
       if (batchModalOpen) closeBatchModal();
       else if (toolsPageOpen) hideToolsPage();
       else if (poSearchPageOpen) hidePOSearchPage();
@@ -1392,17 +1753,6 @@
     } catch (e) {
       await Dialog.alert('生成模板失败: ' + e.message);
     }
-  });
-
-  // ---- 打印 / 贴片 ----
-  $('btn-print-records').addEventListener('click', async () => {
-    if (typeof PrintPage === 'undefined') { await Dialog.alert('打印模块未加载，请刷新页面'); return; }
-    const records = getFilteredRecords();
-    if (records.length === 0) {
-      await Dialog.alert('当前筛选结果为空，没有可打印的记录。');
-      return;
-    }
-    PrintPage.open(records);
   });
 
   $('btn-import-json').addEventListener('click', () => {

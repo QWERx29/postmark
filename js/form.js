@@ -2,7 +2,7 @@
  * 数据录入表单 — 模态框
  * ======================
  * 依赖: PostmarkData (data.js), RecordStore (store.js),
- *       ImageEditor (image-editor.js), ImageCore (image.js)
+ *       ImageUpload (image-upload.js), ImageCore (image.js)
  *
  * 功能:
  *   1. 省/市/县三级联动下拉框
@@ -10,7 +10,7 @@
  *   3. 戳号动态增删（每把日戳单独选材质，戳号留空 = 无戳号）
  *   4. 邮资机条件字段
  *   5. 风景/文化日戳条件字段 + 动态名称增删
- *   6. 日戳图片上传/编辑/保存（ImageEditor 负责编辑，见 image-editor.js）
+ *   6. 日戳图片上传 / 保存（ImageUpload 直接落盘，不进入编辑器）
  */
 
 const EntryForm = (function () {
@@ -177,21 +177,63 @@ const EntryForm = (function () {
     }
   }
 
-  /** 将 10 位整数日期或旧格式设为日历选中值 */
-  function setCancelDateValue(val) {
-    if (!val) { clearDate(); return; }
-    const s = String(val);
-    let y, m, d, h = '08';
+  /**
+   * 解析记录里的盖销日期，返回 { y, m, d, h } 或 null。
+   *
+   * 记录里的日期并不总是标准的 10 位整数：批量编辑、Excel / JSON 导入、
+   * 旧版本都会带进别的写法，所以这里按"能认的都认"处理：
+   *   2026102008 / 20261020         纯数字（10 位带小时，8 位只有日期）
+   *   2026.10.20.08 / 2026.10.20    点分隔（旧格式，小时可省略）
+   *   2026-10-20 08:00 / 2026/10/20 横线 / 斜线，可带时间
+   */
+  function parseCancelDateValue(val) {
+    const s = String(val == null ? '' : val).trim();
+    if (!s) return null;
+
     if (/^\d{10}$/.test(s)) {
-      y = parseInt(s.slice(0,4), 10); m = parseInt(s.slice(4,6), 10);
-      d = parseInt(s.slice(6,8), 10); h = s.slice(8,10);
-    } else if (/^\d{4}\.\d{2}\.\d{2}\.\d{2}$/.test(s)) {
-      const p = s.split('.'); y = +p[0]; m = +p[1]; d = +p[2]; h = p[3];
-    } else { return; }
-    _selYear = y; _selMonth = m; _selDay = d;
-    dom.dateText.textContent = `${y}年${String(m).padStart(2, '0')}月${String(d).padStart(2, '0')}日`;
+      return { y: +s.slice(0, 4), m: +s.slice(4, 6), d: +s.slice(6, 8), h: s.slice(8, 10) };
+    }
+    if (/^\d{8}$/.test(s)) {
+      return { y: +s.slice(0, 4), m: +s.slice(4, 6), d: +s.slice(6, 8), h: '08' };
+    }
+
+    const m = s.match(/^(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})(?:[.\- T](\d{1,2}))?/);
+    if (!m) return null;
+    const h = m[4] == null ? '08' : String(Number(m[4])).padStart(2, '0');
+    return { y: Number(m[1]), m: Number(m[2]), d: Number(m[3]), h };
+  }
+
+  /**
+   * 年月日时分是否落在合理范围内。
+   * 只挡明显拼不出来的值（月份 13、小时 24、位数不够等）；像 2025-02-30 这种
+   * 历史脏数据仍然按原样回填 —— 编辑时不该被强制改成别的日期。
+   */
+  function isPlausibleDateTime(parts) {
+    if (!parts) return false;
+    const { y, m, d, h } = parts;
+    return y >= 1000 && y <= 9999
+      && m >= 1 && m <= 12
+      && d >= 1 && d <= 31
+      && /^([01]\d|2[0-3])$/.test(h);
+  }
+
+  /**
+   * 把记录里的盖销日期回填到日历。
+   *
+   * 关键点：**认不出来就清空，绝不沿用上一条记录的日期**。
+   * 以前的写法是识别失败直接 return，_selYear/_selMonth/_selDay 还留着上一条
+   * 记录（或上一次录入）的值，于是编辑这条记录时：
+   *   · 日期框和日历都停在上一条记录的月份 —— 看起来像"日期倒退一个月"；
+   *   · 用户不改日期直接保存，盖销日期会被悄悄改成上一条记录的日期。
+   */
+  function setCancelDateValue(val) {
+    const parts = parseCancelDateValue(val);
+    if (!isPlausibleDateTime(parts)) { clearDate(); return; }
+    _selYear = parts.y; _selMonth = parts.m; _selDay = parts.d;
+    dom.dateText.textContent = `${parts.y}年${String(parts.m).padStart(2, '0')}月${String(parts.d).padStart(2, '0')}日`;
     dom.dateText.style.color = '#333';
-    dom.cancelDateHour.value = h;
+    // 小时下拉里只有 00~23；认不出来就落回 08，免得保存时拼出 9 位日期
+    dom.cancelDateHour.value = parts.h;
   }
 
   function clearDate() {
@@ -531,13 +573,10 @@ const EntryForm = (function () {
   // 图片本身由服务端写到 images/<记录ID>/（默认在项目根，见 img-export.js），记录里只存相对路径
   // （设计稿第 14 / 15 节：目录由服务端管，渲染层不碰文件系统）。
   //
-  // 表单里的图片有两种状态：
-  //   - 已保存：photoSaved 里有相对路径，缩略图直接走 /images/<relPath>
-  //   - 待保存：只有原始文件对象，缩略图是本地的 objectURL
-  // 记录只在点「保存」时把已保存的那些写进 photos 字段。
+  // 上传后立即落盘：photoSaved 里是相对路径，缩略图直接走 /images/<relPath>；
+  // 记录只在点「保存」时把这些路径写进 photos 字段。
 
   let photoSaved = [];                 // 已保存的相对路径
-  let photoPending = [];               // [{file, name, url}] 尚未保存
   let imagesDir = '';                  // 服务端图片根目录（用于提示里显示完整路径）
 
   function imagesBase() {
@@ -556,39 +595,22 @@ const EntryForm = (function () {
   }
 
   function updatePhotoCount() {
-    const saved = photoSaved.length;
-    const pending = photoPending.length;
-    const total = saved + pending;
     if (!dom.photoCount) return;
-    if (total === 0) {
-      dom.photoCount.textContent = '';
-      return;
-    }
-    dom.photoCount.textContent = pending
-      ? `已保存 ${saved} 张，待保存 ${pending} 张`
-      : `已保存 ${saved} 张`;
-    dom.photoCount.classList.toggle('has-pending', pending > 0);
+    dom.photoCount.textContent = photoSaved.length
+      ? `已保存 ${photoSaved.length} 张`
+      : '';
+    dom.photoCount.classList.remove('has-pending');
   }
 
   function makePhotoThumb(entry) {
     const thumb = document.createElement('div');
-    thumb.className = 'photo-thumb' + (entry.pending ? ' photo-pending' : '');
+    thumb.className = 'photo-thumb';
 
     const img = document.createElement('img');
     img.alt = entry.name;
     img.loading = 'lazy';
-    if (entry.pending) {
-      const url = URL.createObjectURL(entry.file);
-      entry.url = url;
-      img.src = url;
-    } else {
-      img.src = imagesBase() + String(entry.relPath).split('/').map(encodeURIComponent).join('/');
-    }
-    if (entry.width && entry.height) {
-      img.title = `${entry.name}\n${entry.width} × ${entry.height}`;
-    } else {
-      img.title = entry.name;
-    }
+    img.src = imagesBase() + String(entry.relPath).split('/').map(encodeURIComponent).join('/');
+    img.title = entry.name;
 
     const bar = document.createElement('div');
     bar.className = 'photo-thumb-bar';
@@ -601,11 +623,8 @@ const EntryForm = (function () {
     btn.type = 'button';
     btn.className = 'photo-thumb-del';
     btn.textContent = '×';
-    btn.title = entry.pending ? '放弃这张图片' : '从记录中移除';
-    btn.addEventListener('click', () => {
-      if (entry.pending) removePendingPhoto(entry);
-      else removeSavedPhoto(entry.relPath);
-    });
+    btn.title = '从记录中移除';
+    btn.addEventListener('click', () => removeSavedPhoto(entry.relPath));
 
     thumb.append(img, bar, btn);
     return thumb;
@@ -617,32 +636,13 @@ const EntryForm = (function () {
 
     photoSaved.forEach((relPath, i) => {
       dom.photoList.appendChild(makePhotoThumb({
-        pending: false,
         relPath,
         name: savedFileName(relPath),
-        width: 0,
-        height: 0,
         index: i + 1,
       }));
     });
 
-    photoPending.forEach((entry, i) => {
-      dom.photoList.appendChild(makePhotoThumb({
-        pending: true,
-        file: entry.file,
-        name: entry.name,
-        index: photoSaved.length + i + 1,
-      }));
-    });
-
     updatePhotoCount();
-  }
-
-  function removePendingPhoto(entry) {
-    const i = photoPending.indexOf(entry);
-    if (i >= 0) photoPending.splice(i, 1);
-    if (entry.url) URL.revokeObjectURL(entry.url);
-    renderPhotos();
   }
 
   function removeSavedPhoto(relPath) {
@@ -684,86 +684,64 @@ const EntryForm = (function () {
     const files = Array.from(fileList || []);
     if (files.length === 0) return;
 
-    // 一次选多张时提示会很多，这里统一说明一次
-    if (files.length > 1) {
-      const go = await Dialog.confirm(`已选择 ${files.length} 张图片，将逐张进入编辑界面。\n\n继续吗？`);
-      if (!go) return;
-    }
-
     for (const file of files) {
-      const result = await openEditorFor(file);
-      if (!result) continue;         // 用户取消了这一张：继续下一张，不算错误
+      const result = await uploadPhoto(file);
+      // 上传期间表单可能已被关闭：不要再把路径塞进下一次录入
+      if (!dom.overlay || !dom.overlay.classList.contains('active')) return;
+      if (!result) continue;         // 上传失败已提示，继续处理下一张
       photoSaved.push(result.relPath);
       renderPhotos();
+      await notifyUnfiledOnce(result.relPath);
     }
+  }
+
+  /** 记录还没保存过时图片会落到 _unfiled/，提示一次让用户心里有数 */
+  async function notifyUnfiledOnce(relPath) {
+    if (photoSubdir() || !isUnfiled(relPath)) return;
+    if (sessionStorage.getItem('postmark_unfiled_hint')) return;
+    sessionStorage.setItem('postmark_unfiled_hint', '1');
+    const dir = await loadImagesDir();
+    await Dialog.alert(
+      '图片已保存到临时目录（因为这条记录还没保存过）。\n\n' +
+      (dir ? `目录：${dir}\n\n` : '') +
+      '保存记录后，新上传的图片会自动按机构号归档。'
+    );
   }
 
   /**
-   * 打开编辑器处理一张图。
-   * @returns {Promise<object|null>} 保存结果；用户取消返回 null
+   * 直接保存一张图片：不再进入编辑器，选好文件就按原始画面落盘。
+   * @returns {Promise<object|null>} 保存结果；失败返回 null（已提示）
    */
-  async function openEditorFor(file) {
-    // 先做一次本地校验，避免为明显不合法的文件开编辑器。
-    // validate 是 async 的：它要读文件头做内容嗅探，不能只信扩展名。
-    if (typeof ImageCore !== 'undefined') {
-      const invalid = await ImageCore.validate(file);
-      if (invalid) {
-        await Dialog.alert(invalid.message);
-        return null;
-      }
-    }
-
-    const editorCtx = {
-      record: currentRecordDraft(),
-      recordId: photoSubdir(),
-      // 序号接在已保存的图片之后，文件名不会互相顶掉
-      index: photoSaved.length + 1,
-    };
-
-    let result = null;
-    try {
-      result = await ImageEditor.open(file, editorCtx);
-    } catch (err) {
-      await Dialog.alert((err && err.message) || '无法打开图片编辑器。');
+  async function uploadPhoto(file) {
+    if (typeof ImageUpload === 'undefined') {
+      await Dialog.alert('图片上传模块未加载，请刷新页面后重试。');
       return null;
     }
-    if (!result) return null;
-
-    if (!photoSubdir() && isUnfiled(result.relPath)) {
-      // 记录还没保存过，图片先落在 _unfiled/，提示一次让用户心里有数
-      const dir = await loadImagesDir();
-      if (!sessionStorage.getItem('postmark_unfiled_hint')) {
-        sessionStorage.setItem('postmark_unfiled_hint', '1');
-        await Dialog.alert(
-          '图片已保存到临时目录（因为这条记录还没保存过）。\n\n' +
-          (dir ? `目录：${dir}\n\n` : '') +
-          '保存记录后，新上传的图片会自动按机构号归档。'
-        );
-      }
+    try {
+      return await ImageUpload.save(file, {
+        record: currentRecordDraft(),
+        subdir: photoSubdir(),
+        // 序号接在已保存的图片之后，文件名不会互相顶掉
+        index: photoSaved.length + 1,
+      });
+    } catch (err) {
+      await Dialog.alert((err && err.message) || '图片上传失败。');
+      return null;
     }
-    return result;
   }
 
   function resetPhotos() {
-    photoPending.forEach((e) => { if (e.url) URL.revokeObjectURL(e.url); });
-    photoPending = [];
     photoSaved = [];
     renderPhotos();
   }
 
   function setPhotos(list) {
-    photoPending.forEach((e) => { if (e.url) URL.revokeObjectURL(e.url); });
-    photoPending = [];
     photoSaved = Array.isArray(list) ? list.slice() : [];
     renderPhotos();
   }
 
   function getPhotoPaths() {
     return photoSaved.slice();
-  }
-
-  function hasPendingPhotos() {
-    return photoPending.length > 0;
   }
 
   // ============================================================
@@ -892,14 +870,13 @@ const EntryForm = (function () {
   }
 
   // ============================================================
-  // 保存并继续：保留省 / 市 / 县 / 日期，清掉识别字段
+  // 保存并继续：保留省 / 市 / 县 / 日期，清掉网点名称、邮编、机构号等录入字段
   // ============================================================
   function resetForNextRecord() {
     const keep = {
       province: dom.province.value,
       city: dom.city.value,
       district: getDistrictValue(),
-      postalCode: dom.postalCode.value.trim(),
       status: dom.status.value,
       cancelDate: getCancelDateValue(),
     };
@@ -910,6 +887,7 @@ const EntryForm = (function () {
     dom.title.textContent = '录入日戳记录';
 
     dom.postOffice.value = '';
+    dom.postalCode.value = '';
     dom.instCode.value = '';
     dom.stampList.innerHTML = '';
     addStampRow('', '', true);
@@ -928,18 +906,14 @@ const EntryForm = (function () {
     dom.notes.value = '';
     resetPhotos();
 
-    // 恢复位置 / 日期；机构号按保留的邮编重新生成，免得留空挡住下一次保存
+    // 恢复位置 / 日期；邮编与机构号留空，由下一张重新填写（填 6 位邮编时会自动生成机构号）
     dom.province.value = keep.province;
     updateCities();
     dom.city.value = keep.city;
     updateDistricts();
     setDistrictValue(keep.district);
-    dom.postalCode.value = keep.postalCode;
     dom.status.value = keep.status;
     if (keep.cancelDate) setCancelDateValue(keep.cancelDate);
-    if (/^\d{6}$/.test(keep.postalCode)) {
-      dom.instCode.value = RecordStore.generateInstCode(keep.postalCode);
-    }
     updatePostalCodeHint();
 
     dom.postOffice.focus();
@@ -1139,7 +1113,7 @@ const EntryForm = (function () {
 
   /**
    * 保存一条记录。
-   * @param {boolean} continueNext true = 保存并继续（保留省 / 市 / 县 / 日期，清空邮局与戳号）
+   * @param {boolean} continueNext true = 保存并继续（保留省 / 市 / 县 / 日期，清空网点名称、邮编、机构号与戳号）
    */
   async function saveEntry(continueNext) {
     if (dom.recentList) dom.recentList.hidden = true;
@@ -1160,16 +1134,6 @@ const EntryForm = (function () {
     if (!ic || !/^\d{8}$/.test(ic)) { await Dialog.alert('机构号必须为8位数字'); return; }
     if (!cd || !/^\d{10}$/.test(cd)) { await Dialog.alert('请选择完整的盖销日期和时间'); return; }
     if (stampValues.length === 0) { await Dialog.alert('请至少保留一把日戳'); return; }
-
-    // 还有图片没走完"编辑→保存"：存进记录只会在列表里显示成破图，先问清楚
-    if (hasPendingPhotos()) {
-      const n = photoPending.length;
-      const go = await Dialog.confirm(
-        `还有 ${n} 张图片没有保存。\n\n` +
-        '选择「确定」放弃这些图片并保存记录，选择「取消」回去继续处理。'
-      );
-      if (!go) return;
-    }
 
     // 获取区县值 (select 或 input)
     const dist = getDistrictValue();
@@ -1307,8 +1271,63 @@ const EntryForm = (function () {
     }
   }
 
+  /** 下拉框里没有该值时补一个（港澳台 / 参考库改名后的旧网点名） */
+  function ensureSelectOption(sel, value) {
+    const text = String(value == null ? '' : value).trim();
+    if (!sel || !sel.options || !text) return;
+    if (Array.from(sel.options).some(o => o.value === text)) return;
+    const opt = document.createElement('option');
+    opt.value = text;
+    opt.textContent = text;
+    sel.appendChild(opt);
+  }
+
+  /**
+   * 用网点查询结果预填新建表单（省 / 市 / 县 / 邮局名 / 邮编）。
+   * 不写草稿、不弹草稿恢复提示，避免覆盖刚选中的网点。
+   * @param {{province?:string, city?:string, district?:string, name?:string,
+   *          postOffice?:string, postalCode?:string}} prefill
+   */
+  function openPrefill(prefill) {
+    openForm(null, { skipDraftPrompt: true });
+    if (!prefill) return;
+
+    const province = String(prefill.province || '').trim();
+    const city = String(prefill.city || '').trim();
+    const district = String(prefill.district || '').trim();
+    const name = String(prefill.name || prefill.postOffice || '').trim();
+    const postalCode = String(prefill.postalCode || '').trim();
+
+    if (province) {
+      ensureSelectOption(dom.province, province);
+      dom.province.value = province;
+      updateCities();
+    }
+    if (city) {
+      ensureSelectOption(dom.city, city);
+      dom.city.value = city;
+      updateDistricts();
+    }
+    if (district) {
+      ensureSelectOption(dom.district, district);
+      setDistrictValue(district);
+    }
+    if (name) dom.postOffice.value = name;
+    if (postalCode) {
+      dom.postalCode.value = postalCode;
+      if (/^\d{6}$/.test(postalCode)) {
+        dom.instCode.value = RecordStore.generateInstCode(postalCode);
+      }
+    }
+    updatePostalCodeHint();
+    dom.postOffice.focus();
+    dom.postOffice.select();
+  }
+
   function openForm(record, options) {
     if (dom.recentList) dom.recentList.hidden = true;
+    // 换记录前先收起日历：上一次打开留下的弹窗不能再停在旧月份
+    closeCalendar();
     dom.overlay.classList.add('active');
     document.body.style.overflow = 'hidden';
 
@@ -1342,8 +1361,8 @@ const EntryForm = (function () {
       clearSelect(dom.district, '请先选择市');
       dom.district.disabled = true;
 
-      // 上次关闭时留下的草稿：问一次要不要恢复
-      const draft = loadDraft();
+      // 上次关闭时留下的草稿：问一次要不要恢复（从网点查询预填时跳过）
+      const draft = (options && options.skipDraftPrompt) ? null : loadDraft();
       if (draft && hasDraftContent(draft)) {
         setTimeout(async () => {
           if (!dom.overlay.classList.contains('active')) return;
@@ -1371,7 +1390,7 @@ const EntryForm = (function () {
       saveDraft();
     }
     closeCalendar();
-    // 清掉待保存图片的 objectURL，避免长时间占用内存
+    // 清空本表单的图片路径，避免串到下一次录入
     resetPhotos();
     if (dom.recentList) dom.recentList.hidden = true;
     dom.overlay.classList.remove('active');
@@ -1528,7 +1547,7 @@ const EntryForm = (function () {
       if (!isEditMode && dom.overlay && dom.overlay.classList.contains('active')) saveDraft();
     });
 
-    // 快捷键：Ctrl/Cmd+S 保存；Esc 关闭（图片编辑器 / 对话框优先）
+    // 快捷键：Ctrl/Cmd+S 保存；Esc 关闭（对话框优先）
     document.addEventListener('keydown', (e) => {
       if (!dom.overlay.classList.contains('active')) return;
       if (isModalLayerOpen('image-editor-overlay') || isModalLayerOpen('dialog-overlay')) return;
@@ -1554,6 +1573,6 @@ const EntryForm = (function () {
   // ============================================================
   // 公开 API
   // ============================================================
-  return { init, open: openForm, close: closeForm };
+  return { init, open: openForm, openPrefill, close: closeForm };
 
 })();

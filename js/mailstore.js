@@ -34,14 +34,20 @@ const MailStore = {
   /**
    * 邮件种类限定为这两种。
    * 平信没有条码，因此**不强制**填邮件号码；挂号信必须填。
+   * 只有挂号信能按号码查询，平信号码仅用于统计。
    */
-  MAIL_TYPES: ['挂号信', '平信'],
+  MAIL_TYPES: ['平信', '挂号信'],
   NO_BARCODE_TYPE: '平信',
-  DEFAULT_MAIL_TYPE: '挂号信',
+  DEFAULT_MAIL_TYPE: '平信',
 
   /** 该种类是否必须填写邮件号码 */
   requiresMailNo(type) {
     return type !== this.NO_BARCODE_TYPE;
+  },
+
+  /** 该种类是否支持按邮件号码查询（平信无法查询，号码只做统计） */
+  canQuery(type) {
+    return this.requiresMailNo(type);
   },
 
   // ==========================================================

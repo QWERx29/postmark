@@ -40,6 +40,9 @@
   let suggestionsEl = null;
   let officeDebounce = null;
 
+  /** 当前表单里已保存的邮资机戳图片相对路径 */
+  let meterPhotos = [];
+
   function cacheEls() {
     els = {
       page: $('meter-page'),
@@ -68,6 +71,11 @@
       fLower: $('mf-lower'),
       fHeader: $('mf-header'),
       fNotes: $('mf-notes'),
+      photoArea: $('mf-photo-area'),
+      photoList: $('mf-photo-list'),
+      photoAddBtn: $('mf-photo-add'),
+      photoInput: $('mf-photo-input'),
+      photoCount: $('mf-photo-count'),
       dateInput: $('mf-date-input'),
       dateText: $('mf-date-text'),
       dateHour: $('mf-date-hour'),
@@ -498,6 +506,103 @@
   }
 
   // ============================================================
+  // 邮资机戳图片
+  // ============================================================
+  // 与「日戳图片」同一套约定：文件由服务端写到 images/<子目录>/，
+  // 记录里只存相对路径；上传后立即落盘，点「保存」时才把路径写进 photos。
+
+  function savedFileName(relPath) {
+    const s = String(relPath == null ? '' : relPath);
+    const i = s.lastIndexOf('/');
+    return i >= 0 ? s.slice(i + 1) : s;
+  }
+
+  /** 编辑已保存的记录时按记录 ID 归档；新增记录（还没 ID）落到 _unfiled */
+  function meterPhotoSubdir() {
+    const id = els && els.fId ? els.fId.value : '';
+    return id ? `meter_${id}` : '';
+  }
+
+  function updateMeterPhotoCount() {
+    if (!els || !els.photoCount) return;
+    els.photoCount.textContent = meterPhotos.length
+      ? `已保存 ${meterPhotos.length} 张`
+      : '';
+  }
+
+  function renderMeterPhotos() {
+    if (!els || !els.photoList) return;
+    els.photoList.innerHTML = '';
+
+    meterPhotos.forEach((relPath) => {
+      const thumb = document.createElement('div');
+      thumb.className = 'photo-thumb';
+
+      const img = document.createElement('img');
+      img.alt = savedFileName(relPath);
+      img.title = savedFileName(relPath);
+      img.loading = 'lazy';
+      img.src = '/images/' + String(relPath).split('/').map(encodeURIComponent).join('/');
+
+      const bar = document.createElement('div');
+      bar.className = 'photo-thumb-bar';
+      const nameEl = document.createElement('span');
+      nameEl.className = 'photo-thumb-name';
+      nameEl.textContent = savedFileName(relPath);
+      bar.appendChild(nameEl);
+
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'photo-thumb-del';
+      del.textContent = '×';
+      del.title = '从记录中移除';
+      del.addEventListener('click', () => {
+        const i = meterPhotos.indexOf(relPath);
+        if (i >= 0) meterPhotos.splice(i, 1);
+        renderMeterPhotos();
+      });
+
+      thumb.append(img, bar, del);
+      els.photoList.appendChild(thumb);
+    });
+
+    updateMeterPhotoCount();
+  }
+
+  /** 直接保存一张图片（不进入编辑器），失败时提示并返回 null */
+  async function uploadMeterPhoto(file) {
+    if (typeof ImageUpload === 'undefined') {
+      await Dialog.alert('图片上传模块未加载，请刷新页面后重试。');
+      return null;
+    }
+    try {
+      return await ImageUpload.save(file, {
+        record: {
+          cancelDate: getPrintDateValue(),
+          postOffice: els.fOffice.value.trim(),
+        },
+        subdir: meterPhotoSubdir(),
+        index: meterPhotos.length + 1,
+      });
+    } catch (err) {
+      await Dialog.alert((err && err.message) || '图片上传失败。');
+      return null;
+    }
+  }
+
+  async function handleMeterFilesPicked(fileList) {
+    const files = Array.from(fileList || []);
+    for (const file of files) {
+      const result = await uploadMeterPhoto(file);
+      // 上传期间表单可能已被关闭：不要再把路径塞进下一次录入
+      if (!formOpen) return;
+      if (!result) continue;
+      meterPhotos.push(result.relPath);
+      renderMeterPhotos();
+    }
+  }
+
+  // ============================================================
   // 新增 / 编辑表单
   // ============================================================
   function openForm(rec) {
@@ -520,6 +625,8 @@
     els.fLower.value = isEdit ? rec.meterLowerRing : '';
     els.fHeader.value = isEdit ? rec.meterHeader : '';
     els.fNotes.value = isEdit ? rec.notes : '';
+    meterPhotos = isEdit && Array.isArray(rec.photos) ? rec.photos.slice() : [];
+    renderMeterPhotos();
     hideSuggestions();
 
     // 打印日期：编辑时回填已存值，新增时默认今天 + 当前小时（与「录入日戳」一致）
@@ -544,6 +651,8 @@
     formOpen = false;
     closeCalendar();
     hideSuggestions();
+    meterPhotos = [];
+    renderMeterPhotos();
     els.overlay.classList.remove('active');
     document.body.style.overflow = '';
     return true;
@@ -575,6 +684,7 @@
       meterHeader: els.fHeader.value.trim(),
       printDate: getPrintDateValue(),
       notes: els.fNotes.value.trim(),
+      photos: meterPhotos.slice(),
     };
 
     const id = els.fId.value;
@@ -717,6 +827,33 @@
 
     // 打印日期：日历弹窗（统一组件，含年历切换）
     els.dateInput.addEventListener('click', toggleCalendar);
+
+    // 邮资机戳图片：选择 / 拖拽后直接上传，不进入编辑器
+    if (els.photoAddBtn && els.photoInput) {
+      els.photoAddBtn.addEventListener('click', () => els.photoInput.click());
+      els.photoInput.addEventListener('change', async function () {
+        // FileList 是活对象：先拷贝再清空，否则会连拷贝一起清掉
+        const files = Array.from(this.files || []);
+        this.value = '';
+        await handleMeterFilesPicked(files);
+      });
+    }
+    if (els.photoArea) {
+      els.photoArea.addEventListener('dragover', (e) => {
+        if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+        e.preventDefault();
+        els.photoArea.classList.add('photo-dragover');
+      });
+      els.photoArea.addEventListener('dragleave', (e) => {
+        if (e.target === els.photoArea) els.photoArea.classList.remove('photo-dragover');
+      });
+      els.photoArea.addEventListener('drop', async (e) => {
+        if (!e.dataTransfer || !e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
+        e.preventDefault();
+        els.photoArea.classList.remove('photo-dragover');
+        await handleMeterFilesPicked(e.dataTransfer.files);
+      });
+    }
 
     // 数据变化（含移植 / 导入 / 别处改动）时刷新列表
     MeterStore.onChange(() => { if (els.page.style.display !== 'none') render(); });

@@ -766,11 +766,13 @@
   }
 
   let poDetailOpen = false;
+  let poDetailRecord = null;
 
   /** 打开网点详情：地址、开办业务、详情链接、历史归档与收集情况 */
   function openPODetail(rec) {
     const overlay = $('po-detail-overlay');
     if (!overlay || !rec) return;
+    poDetailRecord = rec;
 
     const titleEl = $('po-detail-title');
     const headEl = $('po-detail-head');
@@ -860,6 +862,7 @@
   function closePODetail() {
     if (!poDetailOpen) return false;
     poDetailOpen = false;
+    poDetailRecord = null;
     const overlay = $('po-detail-overlay');
     if (overlay) overlay.classList.remove('active');
     document.body.style.overflow = '';
@@ -1044,8 +1047,28 @@
     if (detailOverlay) {
       const closeBtn = $('po-detail-close');
       const okBtn = $('po-detail-ok');
+      const addRecordBtn = $('po-detail-add-record');
       if (closeBtn) closeBtn.addEventListener('click', closePODetail);
       if (okBtn) okBtn.addEventListener('click', closePODetail);
+      if (addRecordBtn) {
+        addRecordBtn.addEventListener('click', () => {
+          const rec = poDetailRecord;
+          if (!rec) return;
+          if (typeof EntryForm === 'undefined' || typeof EntryForm.openPrefill !== 'function') {
+            Dialog.alert('录入表单尚未加载，请刷新页面后重试。');
+            return;
+          }
+          const prefill = {
+            province: rec.province,
+            city: rec.city,
+            district: rec.district,
+            name: rec.name,
+            postalCode: rec.postalCode,
+          };
+          closePODetail();
+          EntryForm.openPrefill(prefill);
+        });
+      }
       detailOverlay.addEventListener('click', (e) => {
         if (e.target === detailOverlay) closePODetail();
       });

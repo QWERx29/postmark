@@ -22,6 +22,7 @@
  *   meterHeader: string,    // 表头
  *   printDate: string,      // 打印日期 YYYYMMDDHH（与日戳的盖销日期同格式，可直接按字符串排序）
  *   notes: string,          // 备注
+ *   photos: string[],       // 邮资机戳图片相对路径（相对 images/，与日戳记录的 photos 同格式）
  *   sourceRecordId: string, // 移植来源的日戳记录 id（去重用；手工新增为空）
  *   createdAt: string,      // ISO 时间戳
  *   updatedAt: string       // ISO 时间戳
@@ -63,6 +64,9 @@ const MeterStore = {
     // id 会被拼进列表的 data-id 属性，而导入的 JSON 不可信：只接受字母数字
     if (!r.id || !/^[A-Za-z0-9_-]+$/.test(String(r.id))) r.id = this._genId();
     this.FIELDS.forEach(f => { r[f] = r[f] == null ? '' : String(r[f]); });
+    r.photos = Array.isArray(r.photos)
+      ? r.photos.filter(p => typeof p === 'string' && p.trim())
+      : [];
     r.sourceRecordId = r.sourceRecordId || '';
     r.createdAt = r.createdAt || new Date().toISOString();
     r.updatedAt = r.updatedAt || r.createdAt;

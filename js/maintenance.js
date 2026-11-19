@@ -624,6 +624,10 @@
 
     records.getAll().forEach(add);
     if (typeof records.getTrash === 'function') records.getTrash().forEach(add);
+    // 邮资机戳也有图片，漏掉它们会把仍在使用的文件当成孤儿
+    if (typeof MeterStore !== 'undefined' && typeof MeterStore.getAll === 'function') {
+      MeterStore.getAll().forEach(add);
+    }
     return set;
   }
 
